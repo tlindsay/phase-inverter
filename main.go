@@ -1,7 +1,10 @@
 package main
 
-import "github.com/tlindsay/phase-inverter/transmitter"
+import (
+	"github.com/tlindsay/phase-inverter/helm"
+)
 
 func main() {
-	transmitter.Transmit()
+	helm.Intercept()
+	// transmitter.Transmit()
 }
