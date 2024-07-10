@@ -1,13 +1,16 @@
 package main
 
 import (
-	"os"
+	"embed"
 
 	"github.com/charmbracelet/log"
 	"github.com/getlantern/systray"
 	"golang.design/x/hotkey"
 	"golang.design/x/hotkey/mainthread"
 )
+
+//go:embed assets/*
+var fs embed.FS
 
 type PhaseInverter struct {
 	VolDown *hotkey.Hotkey
@@ -20,40 +23,44 @@ func main() {
 }
 
 func (pi *PhaseInverter) RegisterHotkeys() {
-	hkVolDown := hotkey.New([]hotkey.Modifier{hotkey.ModCmd, hotkey.ModShift}, hotkey.KeyDown)
+	hkVolDown := hotkey.New([]hotkey.Modifier{hotkey.ModCmd, hotkey.ModShift}, hotkey.KeyF19)
 	if err := hkVolDown.Register(); err != nil {
-		log.Fatalf("hotkey: failed to register hotkey: %v", err)
+		log.Fatalf("PhaseInverter: failed to register hotkey: %v", err)
 	}
-	log.Infof("hotkey: %v is registered", hkVolDown)
+	log.Infof("PhaseInverter: %v is registered", hkVolDown)
 
-	hkVolUp := hotkey.New([]hotkey.Modifier{hotkey.ModCmd, hotkey.ModShift}, hotkey.KeyUp)
+	hkVolUp := hotkey.New([]hotkey.Modifier{hotkey.ModCmd, hotkey.ModShift}, hotkey.KeyF20)
 	if err := hkVolUp.Register(); err != nil {
-		log.Fatalf("hotkey: failed to register hotkey: %v", err)
+		log.Fatalf("PhaseInverter: failed to register hotkey: %v", err)
 	}
-	log.Infof("hotkey: %v is registered", hkVolUp)
+	log.Infof("PhaseInverter: %v is registered", hkVolUp)
 
 	pi.VolDown = hkVolDown
 	pi.VolUp = hkVolUp
 }
 
 func (pi *PhaseInverter) onScreen() {
-	icon, err := os.ReadFile("./assets/icon.png")
+	icon, err := fs.ReadFile("assets/icon.png")
 	if err != nil {
-		log.Fatalf("viewer: error reading icon: %v", err)
+		log.Fatalf("PhaseInverter: error reading icon: %v", err)
 	}
 	systray.SetTemplateIcon(icon, icon)
-	quitItem := systray.AddMenuItem("Quit", "Quit")
+	quitItem := systray.AddMenuItem("Quit", "Quit Phase Inverter")
 
 	go mainthread.Init(func() {
 		pi.RegisterHotkeys()
 		for {
 			select {
 			case <-quitItem.ClickedCh:
-				systray.Quit()
+				mainthread.Call(systray.Quit)
 			case <-pi.VolDown.Keydown():
-				log.Infof("phase inverter: VolDown keypress")
+				mainthread.Call(func() {
+					log.Infof("PhaseInverter: VolDown keypress")
+				})
 			case <-pi.VolUp.Keydown():
-				log.Infof("phase inverter: VolUp keypress")
+				mainthread.Call(func() {
+					log.Infof("PhaseInverter: VolUp keypress")
+				})
 			}
 		}
 	})
@@ -61,9 +68,9 @@ func (pi *PhaseInverter) onScreen() {
 }
 
 func (pi *PhaseInverter) endTransmission() {
-	log.Infof("viewer: Shutting down...")
+	log.Infof("PhaseInverter: Shutting down...")
 	pi.VolDown.Unregister()
-	log.Infof("hotkey: %v is unregistered", pi.VolDown)
+	log.Infof("PhaseInverter: hotkey %v is unregistered", pi.VolDown)
 	pi.VolUp.Unregister()
-	log.Infof("hotkey: %v is unregistered", pi.VolUp)
+	log.Infof("PhaseInverter: hotkey %v is unregistered", pi.VolUp)
 }
