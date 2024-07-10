@@ -23,6 +23,6 @@
 	<key>IFMinorVersion</key>
 	<integer>1</integer>
 	<key>LSUIElement</key>
-	<true />
+	<string>1</string>
 </dict>
 </plist>
