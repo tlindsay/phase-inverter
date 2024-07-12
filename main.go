@@ -2,9 +2,11 @@ package main
 
 import (
 	"embed"
+	"os"
 
 	"github.com/charmbracelet/log"
 	"github.com/getlantern/systray"
+	"github.com/tlindsay/phase-inverter/transmitter"
 	"golang.design/x/hotkey"
 	"golang.design/x/hotkey/mainthread"
 )
@@ -13,16 +15,28 @@ import (
 var fs embed.FS
 
 type PhaseInverter struct {
-	VolDown *hotkey.Hotkey
-	VolUp   *hotkey.Hotkey
+	Log         *log.Logger
+	Transmitter *transmitter.Transmitter
+	VolDown     *hotkey.Hotkey
+	VolUp       *hotkey.Hotkey
 }
 
 func main() {
-	pi := &PhaseInverter{}
+	pi := &PhaseInverter{
+		Log: log.WithPrefix("PhaseInverter"),
+	}
+
+	t, err := transmitter.NewTransmitter(pi.Log)
+	if err != nil {
+		pi.Log.Fatalf("failed to initialize Transmitter: %v", err)
+		os.Exit(1)
+	}
+	pi.Transmitter = t
+
 	systray.Run(pi.onScreen, pi.endTransmission)
 }
 
-func (pi *PhaseInverter) RegisterHotkeys() {
+func (pi *PhaseInverter) registerHotkeys() {
 	hkVolDown := hotkey.New([]hotkey.Modifier{hotkey.ModCmd, hotkey.ModShift}, hotkey.KeyF19)
 	if err := hkVolDown.Register(); err != nil {
 		log.Fatalf("PhaseInverter: failed to register hotkey: %v", err)
@@ -48,18 +62,18 @@ func (pi *PhaseInverter) onScreen() {
 	quitItem := systray.AddMenuItem("Quit", "Quit Phase Inverter")
 
 	go mainthread.Init(func() {
-		pi.RegisterHotkeys()
+		pi.registerHotkeys()
 		for {
 			select {
 			case <-quitItem.ClickedCh:
 				mainthread.Call(systray.Quit)
 			case <-pi.VolDown.Keydown():
 				mainthread.Call(func() {
-					log.Infof("PhaseInverter: VolDown keypress")
+					pi.Transmitter.Transmit(transmitter.TransmissionVolDown)
 				})
 			case <-pi.VolUp.Keydown():
 				mainthread.Call(func() {
-					log.Infof("PhaseInverter: VolUp keypress")
+					pi.Transmitter.Transmit(transmitter.TransmissionVolUp)
 				})
 			}
 		}
