@@ -34,8 +34,11 @@ type Transmission int
 
 const (
 	TransmissionVolDown Transmission = iota
+	TransmissionVolDownFine
 	TransmissionVolUp
+	TransmissionVolUpFine
 	TransmissionToggleMute
+	TransmissionTogglePower
 )
 
 const VOLUME_DELTA int = 5
@@ -43,6 +46,7 @@ const VOLUME_DELTA int = 5
 type playerState struct {
 	currentVolume int
 	isMuted       bool
+	isPoweredOn   bool
 }
 
 type Transmitter struct {
@@ -52,13 +56,12 @@ type Transmitter struct {
 }
 
 func NewTransmitter(l *log.Logger) (*Transmitter, error) {
-	t := &Transmitter{Log: l.WithPrefix("Transmitter")}
-
 	c, err := newClient()
 	if err != nil {
 		return nil, err
 	}
-	t.client = c
+
+	t := &Transmitter{Log: l, client: c}
 
 	if err := t.setupSubscriptions(); err != nil {
 		t.Log.Errorf("failed to establish subscriptions: %v", err)
@@ -92,6 +95,28 @@ func (t *Transmitter) setupSubscriptions() error {
 		func(c mqtt.Client, m mqtt.Message) {
 			t.Log.Infof("Subscription event: %#v", m)
 			switch m.Topic() {
+			case topicStatusMute:
+				mute, err := strconv.ParseBool(string(m.Payload()))
+				if err != nil {
+					t.Log.Errorf("Could not parse payload from Mute event: %v", err)
+					return
+				}
+
+				t.Log.Infof("Mute received: %t", mute)
+				t.state.isMuted = mute
+			case topicStatusPower:
+				var pwr bool
+				if payload := string(m.Payload()); payload == "on" {
+					pwr = true
+				} else if payload == "standby" {
+					pwr = false
+				} else {
+					t.Log.Errorf("Could not parse payload from Power event: %v", payload)
+					return
+				}
+
+				t.Log.Infof("Power received: %t", pwr)
+				t.state.isPoweredOn = pwr
 			case topicStatusVolume:
 				vol, err := strconv.Atoi(string(m.Payload()))
 				if err != nil {
@@ -124,28 +149,52 @@ func (t *Transmitter) Transmit(tr Transmission) {
 
 	switch tr {
 	case TransmissionVolDown:
-		t.Log.Infof("Current volume: %d, Decrease: %d", t.state.currentVolume, VOLUME_DELTA)
 		newVol, err := clamp(t.state.currentVolume-VOLUME_DELTA, 0, 100)
 		if err != nil {
 			t.Log.Errorf("error calculating new volume: %v", err)
 			return
 		}
+		t.Log.Infof("Current volume: %d, -%d => %d", t.state.currentVolume, VOLUME_DELTA, newVol)
+		msg = []byte(strconv.Itoa(newVol))
+		topic = string(topicSetVolume)
+	case TransmissionVolDownFine:
+		newVol, err := clamp(t.state.currentVolume-(VOLUME_DELTA/2), 0, 100)
+		if err != nil {
+			t.Log.Errorf("error calculating new volume: %v", err)
+			return
+		}
+		t.Log.Infof("Current volume: %d, -%d => %d", t.state.currentVolume, (VOLUME_DELTA / 2), newVol)
 		msg = []byte(strconv.Itoa(newVol))
 		topic = string(topicSetVolume)
 	case TransmissionVolUp:
-		t.Log.Infof("Current volume: %d, Increase: %d", t.state.currentVolume, VOLUME_DELTA)
 		newVol, err := clamp(t.state.currentVolume+VOLUME_DELTA, 0, 100)
 		if err != nil {
 			t.Log.Errorf("error calculating new volume: %v", err)
 			return
 		}
+		t.Log.Infof("Current volume: %d, +%d => %d", t.state.currentVolume, VOLUME_DELTA, newVol)
+		msg = []byte(strconv.Itoa(newVol))
+		topic = string(topicSetVolume)
+	case TransmissionVolUpFine:
+		newVol, err := clamp(t.state.currentVolume+(VOLUME_DELTA/2), 0, 100)
+		if err != nil {
+			t.Log.Errorf("error calculating new volume: %v", err)
+			return
+		}
+		t.Log.Infof("Current volume: %d, +%d => %d", t.state.currentVolume, (VOLUME_DELTA / 2), newVol)
 		msg = []byte(strconv.Itoa(newVol))
 		topic = string(topicSetVolume)
 	case TransmissionToggleMute:
 		topic = string(topicSetMute)
+		t.Log.Infof("Current mute: %t => %t", t.state.isMuted, !t.state.isMuted)
+		msg = []byte(strconv.FormatBool(!t.state.isMuted))
+	case TransmissionTogglePower:
+		topic = string(topicSetPower)
+		t.Log.Infof("Current power: %t => %t", t.state.isMuted, !t.state.isMuted)
+		msg = []byte(strconv.FormatBool(!t.state.isPoweredOn))
 	}
 
-	t.Log.Infof("Attempting to publish to %s: %s", topic, msg)
+	t.Log.Debugf("Attempting to publish to %s: %s", topic, msg)
 	token := t.client.Publish(topic, qos, false, msg)
 	go func() {
 		<-token.Done()
