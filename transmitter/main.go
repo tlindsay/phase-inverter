@@ -39,12 +39,25 @@ const (
 	TransmissionVolUpFine
 	TransmissionToggleMute
 	TransmissionTogglePower
+
+	TransmissionChangeInputSpotify
+	TransmissionChangeInputPhono
+	TransmissionChangeInputSirius
+	TransmissionChangeInputAirplay
+)
+
+const (
+	InputSpotify = "Spotify"
+	InputPhono   = "Phono"
+	InputSirius  = "SiriusXM"
+	InputAirplay = "Airplay Receiver"
 )
 
 const VOLUME_DELTA int = 5
 
 type playerState struct {
 	currentVolume int
+	currentInput  string
 	isMuted       bool
 	isPoweredOn   bool
 }
@@ -95,6 +108,10 @@ func (t *Transmitter) setupSubscriptions() error {
 		func(c mqtt.Client, m mqtt.Message) {
 			t.Log.Infof("Subscription event: %#v", m)
 			switch m.Topic() {
+			case topicStatusInput:
+				input := m.Payload()
+				t.Log.Infof("Input received: %s", input)
+				t.state.currentInput = string(input)
 			case topicStatusMute:
 				mute, err := strconv.ParseBool(string(m.Payload()))
 				if err != nil {
@@ -148,6 +165,30 @@ func (t *Transmitter) Transmit(tr Transmission) {
 	var msg []byte
 
 	switch tr {
+	case TransmissionChangeInputSpotify:
+		topic = string(topicSetInput)
+		t.Log.Infof("Current input: %s => %s", t.state.currentInput, InputSpotify)
+		msg = []byte(InputSpotify)
+	case TransmissionChangeInputPhono:
+		topic = string(topicSetInput)
+		t.Log.Infof("Current input: %s => %s", t.state.currentInput, InputPhono)
+		msg = []byte(InputPhono)
+	case TransmissionChangeInputSirius:
+		topic = string(topicSetInput)
+		t.Log.Infof("Current input: %s => %s", t.state.currentInput, InputSirius)
+		msg = []byte(InputSirius)
+	case TransmissionChangeInputAirplay:
+		topic = string(topicSetInput)
+		t.Log.Infof("Current input: %s => %s", t.state.currentInput, InputAirplay)
+		msg = []byte(InputAirplay)
+	case TransmissionToggleMute:
+		topic = string(topicSetMute)
+		t.Log.Infof("Current mute: %t => %t", t.state.isMuted, !t.state.isMuted)
+		msg = []byte(strconv.FormatBool(!t.state.isMuted))
+	case TransmissionTogglePower:
+		topic = string(topicSetPower)
+		t.Log.Infof("Current power: %t => %t", t.state.isMuted, !t.state.isMuted)
+		msg = []byte(strconv.FormatBool(!t.state.isPoweredOn))
 	case TransmissionVolDown:
 		newVol, err := clamp(t.state.currentVolume-VOLUME_DELTA, 0, 100)
 		if err != nil {
@@ -184,14 +225,6 @@ func (t *Transmitter) Transmit(tr Transmission) {
 		t.Log.Infof("Current volume: %d, +%d => %d", t.state.currentVolume, (VOLUME_DELTA / 2), newVol)
 		msg = []byte(strconv.Itoa(newVol))
 		topic = string(topicSetVolume)
-	case TransmissionToggleMute:
-		topic = string(topicSetMute)
-		t.Log.Infof("Current mute: %t => %t", t.state.isMuted, !t.state.isMuted)
-		msg = []byte(strconv.FormatBool(!t.state.isMuted))
-	case TransmissionTogglePower:
-		topic = string(topicSetPower)
-		t.Log.Infof("Current power: %t => %t", t.state.isMuted, !t.state.isMuted)
-		msg = []byte(strconv.FormatBool(!t.state.isPoweredOn))
 	}
 
 	t.Log.Debugf("Attempting to publish to %s: %s", topic, msg)

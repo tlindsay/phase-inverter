@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/getlantern/systray"
 	t "github.com/tlindsay/phase-inverter/transmitter"
-	"golang.design/x/hotkey"
+	hk "golang.design/x/hotkey"
 	"golang.design/x/hotkey/mainthread"
 )
 
@@ -17,7 +17,7 @@ var fs embed.FS
 type PhaseInverter struct {
 	Log         *log.Logger
 	Transmitter *t.Transmitter
-	Keymap      map[t.Transmission]*hotkey.Hotkey
+	Keymap      map[t.Transmission]*hk.Hotkey
 }
 
 func main() {
@@ -33,6 +33,16 @@ func main() {
 				ReportTimestamp: true,
 			},
 		),
+		Keymap: map[t.Transmission]*hk.Hotkey{
+			t.TransmissionToggleMute:  hk.New([]hk.Modifier{hk.ModCmd}, hk.KeyF18),
+			t.TransmissionTogglePower: hk.New([]hk.Modifier{hk.ModCmd, hk.ModShift}, hk.KeyF18),
+
+			t.TransmissionVolDown:     hk.New([]hk.Modifier{hk.ModCmd}, hk.KeyF19),
+			t.TransmissionVolDownFine: hk.New([]hk.Modifier{hk.ModCmd, hk.ModShift}, hk.KeyF19),
+
+			t.TransmissionVolUp:     hk.New([]hk.Modifier{hk.ModCmd}, hk.KeyF20),
+			t.TransmissionVolUpFine: hk.New([]hk.Modifier{hk.ModCmd, hk.ModShift}, hk.KeyF20),
+		},
 	}
 
 	t, err := t.NewTransmitter(pi.Log)
@@ -46,7 +56,8 @@ func main() {
 }
 
 func (pi *PhaseInverter) registerHotkeys() {
-	for _, k := range pi.Keymap {
+	for t, k := range pi.Keymap {
+		pi.Log.Infof("registering key: %v", t)
 		if err := k.Register(); err != nil {
 			pi.Log.Fatalf("failed to register hotkey: %v", err)
 		}
@@ -60,12 +71,33 @@ func (pi *PhaseInverter) onScreen() {
 		pi.Log.Fatalf("error reading icon: %v", err)
 	}
 	systray.SetTemplateIcon(icon, icon)
+	spotifyItem := systray.AddMenuItem("Spotify", "Set input to Spotify")
+	phonoItem := systray.AddMenuItem("Phono", "Set input to Phono")
+	siriusItem := systray.AddMenuItem("SiriusXM", "Set input to SiriusXM radio")
+	airplayItem := systray.AddMenuItem("AirPlay", "Set input to AirPlay Receiver")
+	systray.AddSeparator()
 	quitItem := systray.AddMenuItem("Quit", "Quit Phase Inverter")
 
 	go mainthread.Init(func() {
 		pi.registerHotkeys()
 		for {
 			select {
+			case <-spotifyItem.ClickedCh:
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionChangeInputSpotify)
+				})
+			case <-phonoItem.ClickedCh:
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionChangeInputPhono)
+				})
+			case <-siriusItem.ClickedCh:
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionChangeInputSirius)
+				})
+			case <-airplayItem.ClickedCh:
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionChangeInputAirplay)
+				})
 			case <-quitItem.ClickedCh:
 				mainthread.Call(systray.Quit)
 			case <-pi.Keymap[t.TransmissionToggleMute].Keydown():
