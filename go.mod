@@ -6,7 +6,6 @@ require (
 	github.com/charmbracelet/log v0.4.0
 	github.com/eclipse/paho.mqtt.golang v1.4.3
 	github.com/getlantern/systray v1.2.2
-	github.com/tlindsay/subspace v0.0.0-20231026235810-4fde8eb28085
 	golang.design/x/hotkey v0.4.1
 )
 
