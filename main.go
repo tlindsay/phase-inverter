@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/getlantern/systray"
-	"github.com/tlindsay/phase-inverter/transmitter"
+	t "github.com/tlindsay/phase-inverter/transmitter"
 	"golang.design/x/hotkey"
 	"golang.design/x/hotkey/mainthread"
 )
@@ -16,9 +16,8 @@ var fs embed.FS
 
 type PhaseInverter struct {
 	Log         *log.Logger
-	Transmitter *transmitter.Transmitter
-	VolDown     *hotkey.Hotkey
-	VolUp       *hotkey.Hotkey
+	Transmitter *t.Transmitter
+	Keymap      map[t.Transmission]*hotkey.Hotkey
 }
 
 func main() {
@@ -36,7 +35,7 @@ func main() {
 		),
 	}
 
-	t, err := transmitter.NewTransmitter(pi.Log)
+	t, err := t.NewTransmitter(pi.Log)
 	if err != nil {
 		pi.Log.Fatalf("failed to initialize Transmitter: %v", err)
 		os.Exit(1)
@@ -47,20 +46,12 @@ func main() {
 }
 
 func (pi *PhaseInverter) registerHotkeys() {
-	hkVolDown := hotkey.New([]hotkey.Modifier{hotkey.ModCmd, hotkey.ModShift}, hotkey.KeyF19)
-	if err := hkVolDown.Register(); err != nil {
-		log.Fatalf("PhaseInverter: failed to register hotkey: %v", err)
+	for _, k := range pi.Keymap {
+		if err := k.Register(); err != nil {
+			pi.Log.Fatalf("failed to register hotkey: %v", err)
+		}
+		pi.Log.Infof("%v is registered", k)
 	}
-	log.Infof("PhaseInverter: %v is registered", hkVolDown)
-
-	hkVolUp := hotkey.New([]hotkey.Modifier{hotkey.ModCmd, hotkey.ModShift}, hotkey.KeyF20)
-	if err := hkVolUp.Register(); err != nil {
-		log.Fatalf("PhaseInverter: failed to register hotkey: %v", err)
-	}
-	log.Infof("PhaseInverter: %v is registered", hkVolUp)
-
-	pi.VolDown = hkVolDown
-	pi.VolUp = hkVolUp
 }
 
 func (pi *PhaseInverter) onScreen() {
@@ -77,13 +68,29 @@ func (pi *PhaseInverter) onScreen() {
 			select {
 			case <-quitItem.ClickedCh:
 				mainthread.Call(systray.Quit)
-			case <-pi.VolDown.Keydown():
+			case <-pi.Keymap[t.TransmissionToggleMute].Keydown():
 				mainthread.Call(func() {
-					pi.Transmitter.Transmit(transmitter.TransmissionVolDown)
+					pi.Transmitter.Transmit(t.TransmissionToggleMute)
 				})
-			case <-pi.VolUp.Keydown():
+			case <-pi.Keymap[t.TransmissionTogglePower].Keydown():
 				mainthread.Call(func() {
-					pi.Transmitter.Transmit(transmitter.TransmissionVolUp)
+					pi.Transmitter.Transmit(t.TransmissionTogglePower)
+				})
+			case <-pi.Keymap[t.TransmissionVolDown].Keydown():
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionVolDown)
+				})
+			case <-pi.Keymap[t.TransmissionVolDownFine].Keydown():
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionVolDownFine)
+				})
+			case <-pi.Keymap[t.TransmissionVolUp].Keydown():
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionVolUp)
+				})
+			case <-pi.Keymap[t.TransmissionVolUpFine].Keydown():
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionVolUpFine)
 				})
 			}
 		}
@@ -92,9 +99,11 @@ func (pi *PhaseInverter) onScreen() {
 }
 
 func (pi *PhaseInverter) endTransmission() {
-	log.Infof("PhaseInverter: Shutting down...")
-	pi.VolDown.Unregister()
-	log.Infof("PhaseInverter: hotkey %v is unregistered", pi.VolDown)
-	pi.VolUp.Unregister()
-	log.Infof("PhaseInverter: hotkey %v is unregistered", pi.VolUp)
+	pi.Log.Infof("Shutting down...")
+	for _, k := range pi.Keymap {
+		if err := k.Unregister(); err != nil {
+			pi.Log.Errorf("error unregistering hotkey %s: %v", k, err)
+		}
+		pi.Log.Infof("hotkey %s is unregistered", k)
+	}
 }
