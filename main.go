@@ -22,8 +22,18 @@ type PhaseInverter struct {
 }
 
 func main() {
+	// Have to shim Syslog manually because the stdlib package is broken
+	// https://github.com/golang/go/issues/59229
+	logwriter := Syslog{LOG_INFO | LOG_DAEMON}
 	pi := &PhaseInverter{
-		Log: log.WithPrefix("PhaseInverter"),
+		Log: log.NewWithOptions(
+			logwriter,
+			log.Options{
+				Prefix:          "PhaseInverter",
+				ReportCaller:    true,
+				ReportTimestamp: true,
+			},
+		),
 	}
 
 	t, err := transmitter.NewTransmitter(pi.Log)
@@ -56,7 +66,7 @@ func (pi *PhaseInverter) registerHotkeys() {
 func (pi *PhaseInverter) onScreen() {
 	icon, err := fs.ReadFile("assets/icon.png")
 	if err != nil {
-		log.Fatalf("PhaseInverter: error reading icon: %v", err)
+		pi.Log.Fatalf("error reading icon: %v", err)
 	}
 	systray.SetTemplateIcon(icon, icon)
 	quitItem := systray.AddMenuItem("Quit", "Quit Phase Inverter")
