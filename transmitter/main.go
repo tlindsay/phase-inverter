@@ -53,7 +53,12 @@ const (
 	InputAirplay = "Airplay Receiver"
 )
 
-const VOLUME_DELTA int = 5
+const (
+	VOLUME_DELTA      int = 5
+	VOLUME_DELTA_FINE int = VOLUME_DELTA / 2
+	VOLUME_MIN        int = 0
+	VOLUME_MAX        int = 100
+)
 
 type playerState struct {
 	currentVolume int
@@ -163,68 +168,53 @@ func (t *Transmitter) Transmit(tr Transmission) {
 
 	var topic string
 	var msg []byte
+	var err error
 
 	switch tr {
 	case TransmissionChangeInputSpotify:
+		t.Log.Infof("Changing input: %s => %s", t.state.currentInput, InputSpotify)
 		topic = string(topicSetInput)
-		t.Log.Infof("Current input: %s => %s", t.state.currentInput, InputSpotify)
 		msg = []byte(InputSpotify)
 	case TransmissionChangeInputPhono:
+		t.Log.Infof("Changing input: %s => %s", t.state.currentInput, InputPhono)
 		topic = string(topicSetInput)
-		t.Log.Infof("Current input: %s => %s", t.state.currentInput, InputPhono)
 		msg = []byte(InputPhono)
 	case TransmissionChangeInputSirius:
+		t.Log.Infof("Changing input: %s => %s", t.state.currentInput, InputSirius)
 		topic = string(topicSetInput)
-		t.Log.Infof("Current input: %s => %s", t.state.currentInput, InputSirius)
 		msg = []byte(InputSirius)
 	case TransmissionChangeInputAirplay:
+		t.Log.Infof("Changing input: %s => %s", t.state.currentInput, InputAirplay)
 		topic = string(topicSetInput)
-		t.Log.Infof("Current input: %s => %s", t.state.currentInput, InputAirplay)
 		msg = []byte(InputAirplay)
 	case TransmissionToggleMute:
+		t.Log.Infof("Changing mute: %t => %t", t.state.isMuted, !t.state.isMuted)
 		topic = string(topicSetMute)
-		t.Log.Infof("Current mute: %t => %t", t.state.isMuted, !t.state.isMuted)
 		msg = []byte(strconv.FormatBool(!t.state.isMuted))
 	case TransmissionTogglePower:
+		t.Log.Infof("Changing power: %t => %t", t.state.isPoweredOn, !t.state.isPoweredOn)
 		topic = string(topicSetPower)
-		t.Log.Infof("Current power: %t => %t", t.state.isMuted, !t.state.isMuted)
 		msg = []byte(strconv.FormatBool(!t.state.isPoweredOn))
 	case TransmissionVolDown:
-		newVol, err := clamp(t.state.currentVolume-VOLUME_DELTA, 0, 100)
+		topic, msg, err = t.changeVolume(VOLUME_DELTA * -1)
 		if err != nil {
-			t.Log.Errorf("error calculating new volume: %v", err)
 			return
 		}
-		t.Log.Infof("Current volume: %d, -%d => %d", t.state.currentVolume, VOLUME_DELTA, newVol)
-		msg = []byte(strconv.Itoa(newVol))
-		topic = string(topicSetVolume)
 	case TransmissionVolDownFine:
-		newVol, err := clamp(t.state.currentVolume-(VOLUME_DELTA/2), 0, 100)
+		topic, msg, err = t.changeVolume(VOLUME_DELTA_FINE * -1)
 		if err != nil {
-			t.Log.Errorf("error calculating new volume: %v", err)
 			return
 		}
-		t.Log.Infof("Current volume: %d, -%d => %d", t.state.currentVolume, (VOLUME_DELTA / 2), newVol)
-		msg = []byte(strconv.Itoa(newVol))
-		topic = string(topicSetVolume)
 	case TransmissionVolUp:
-		newVol, err := clamp(t.state.currentVolume+VOLUME_DELTA, 0, 100)
+		topic, msg, err = t.changeVolume(VOLUME_DELTA)
 		if err != nil {
-			t.Log.Errorf("error calculating new volume: %v", err)
 			return
 		}
-		t.Log.Infof("Current volume: %d, +%d => %d", t.state.currentVolume, VOLUME_DELTA, newVol)
-		msg = []byte(strconv.Itoa(newVol))
-		topic = string(topicSetVolume)
 	case TransmissionVolUpFine:
-		newVol, err := clamp(t.state.currentVolume+(VOLUME_DELTA/2), 0, 100)
+		topic, msg, err = t.changeVolume(VOLUME_DELTA_FINE)
 		if err != nil {
-			t.Log.Errorf("error calculating new volume: %v", err)
 			return
 		}
-		t.Log.Infof("Current volume: %d, +%d => %d", t.state.currentVolume, (VOLUME_DELTA / 2), newVol)
-		msg = []byte(strconv.Itoa(newVol))
-		topic = string(topicSetVolume)
 	}
 
 	t.Log.Debugf("Attempting to publish to %s: %s", topic, msg)
@@ -237,6 +227,16 @@ func (t *Transmitter) Transmit(tr Transmission) {
 			t.Log.Infof("published message %d", token.(*mqtt.PublishToken).MessageID())
 		}
 	}()
+}
+
+func (t *Transmitter) changeVolume(delta int) (topic string, msg []byte, err error) {
+	newVol, err := clamp(t.state.currentVolume+(delta), VOLUME_MIN, VOLUME_MAX)
+	if err != nil {
+		t.Log.Errorf("error calculating new volume: %v", err)
+		return "", nil, err
+	}
+	t.Log.Infof("Changing volume: %d, +%d => %d", t.state.currentVolume, (delta), newVol)
+	return string(topicSetVolume), []byte(strconv.Itoa(newVol)), nil
 }
 
 func clamp(n, min, max int) (int, error) {
