@@ -4,6 +4,7 @@ import (
 	"embed"
 	"os"
 
+	"github.com/adrg/xdg"
 	"github.com/charmbracelet/log"
 	"github.com/getlantern/systray"
 	t "github.com/tlindsay/phase-inverter/transmitter"
@@ -21,9 +22,17 @@ type PhaseInverter struct {
 }
 
 func main() {
-	// Have to shim Syslog manually because the stdlib package is broken
-	// https://github.com/golang/go/issues/59229
-	logwriter := Syslog{LOG_INFO | LOG_DAEMON}
+	logPath, err := xdg.DataFile("Phase Inverter/phase_inverter.log")
+	log.Infof("Logging to file %s...", logPath)
+	if err != nil {
+		log.Fatalf("failed to create log file: %v", err)
+		os.Exit(1)
+	}
+	logwriter, err := os.OpenFile(logPath, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		log.Fatalf("failed to open log file: %v", err)
+		os.Exit(1)
+	}
 	pi := &PhaseInverter{
 		Log: log.NewWithOptions(
 			logwriter,
