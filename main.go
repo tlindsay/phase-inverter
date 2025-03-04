@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"os"
+	"sync"
 
 	"github.com/adrg/xdg"
 	"github.com/charmbracelet/log"
@@ -19,6 +20,7 @@ type PhaseInverter struct {
 	Log         *log.Logger
 	Transmitter *t.Transmitter
 	Keymap      map[t.Transmission]*hk.Hotkey
+	wg          sync.WaitGroup
 }
 
 func main() {
@@ -52,6 +54,7 @@ func main() {
 			t.TransmissionVolUp:     hk.New([]hk.Modifier{hk.ModCmd}, hk.KeyF20),
 			t.TransmissionVolUpFine: hk.New([]hk.Modifier{hk.ModCmd, hk.ModShift}, hk.KeyF20),
 		},
+		wg: sync.WaitGroup{},
 	}
 
 	t, err := t.NewTransmitter(pi.Log)
@@ -61,20 +64,39 @@ func main() {
 	}
 	pi.Transmitter = t
 
-	systray.Run(pi.onScreen, pi.endTransmission)
+	mainthread.Init(func() {
+		go pi.registerHotkeys()
+		systray.Register(pi.onScreen, pi.endTransmission)
+
+		pi.wg.Wait()
+	})
 }
 
 func (pi *PhaseInverter) registerHotkeys() {
-	for t, k := range pi.Keymap {
-		pi.Log.Infof("registering key: %v", t)
-		if err := k.Register(); err != nil {
-			pi.Log.Fatalf("failed to register hotkey: %v", err)
-		}
-		pi.Log.Infof("%v is registered", k)
+	pi.wg.Add(len(pi.Keymap))
+
+	for tr, k := range pi.Keymap {
+		go func(tr t.Transmission, k *hk.Hotkey) {
+			defer pi.wg.Done()
+
+			pi.Log.Infof("registering key: %v", tr)
+			if err := k.Register(); err != nil {
+				pi.Log.Fatalf("failed to register hotkey: %v", err)
+			}
+			pi.Log.Infof("%v is registered", k)
+
+			for {
+				<-k.Keydown()
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(tr)
+				})
+			}
+		}(tr, k)
 	}
 }
 
 func (pi *PhaseInverter) onScreen() {
+	pi.Log.Infof("Bootstrapping system tray...")
 	icon, err := fs.ReadFile("assets/icon.png")
 	if err != nil {
 		pi.Log.Fatalf("error reading icon: %v", err)
@@ -87,8 +109,7 @@ func (pi *PhaseInverter) onScreen() {
 	systray.AddSeparator()
 	quitItem := systray.AddMenuItem("Quit", "Quit Phase Inverter")
 
-	go mainthread.Init(func() {
-		pi.registerHotkeys()
+	go func() {
 		for {
 			select {
 			case <-spotifyItem.ClickedCh:
@@ -109,34 +130,9 @@ func (pi *PhaseInverter) onScreen() {
 				})
 			case <-quitItem.ClickedCh:
 				mainthread.Call(systray.Quit)
-			case <-pi.Keymap[t.TransmissionToggleMute].Keydown():
-				mainthread.Call(func() {
-					pi.Transmitter.Transmit(t.TransmissionToggleMute)
-				})
-			case <-pi.Keymap[t.TransmissionTogglePower].Keydown():
-				mainthread.Call(func() {
-					pi.Transmitter.Transmit(t.TransmissionTogglePower)
-				})
-			case <-pi.Keymap[t.TransmissionVolDown].Keydown():
-				mainthread.Call(func() {
-					pi.Transmitter.Transmit(t.TransmissionVolDown)
-				})
-			case <-pi.Keymap[t.TransmissionVolDownFine].Keydown():
-				mainthread.Call(func() {
-					pi.Transmitter.Transmit(t.TransmissionVolDownFine)
-				})
-			case <-pi.Keymap[t.TransmissionVolUp].Keydown():
-				mainthread.Call(func() {
-					pi.Transmitter.Transmit(t.TransmissionVolUp)
-				})
-			case <-pi.Keymap[t.TransmissionVolUpFine].Keydown():
-				mainthread.Call(func() {
-					pi.Transmitter.Transmit(t.TransmissionVolUpFine)
-				})
 			}
 		}
-	})
-
+	}()
 }
 
 func (pi *PhaseInverter) endTransmission() {
