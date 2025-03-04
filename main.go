@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -23,6 +24,7 @@ type PhaseInverter struct {
 	Log         *log.Logger
 	Transmitter *t.Transmitter
 	Keymap      map[t.Transmission]*hk.Hotkey
+	Menu        map[string]*systray.MenuItem
 	wg          sync.WaitGroup
 }
 
@@ -58,7 +60,8 @@ func main() {
 			t.TransmissionVolUp:     hk.New([]hk.Modifier{hk.ModCmd}, hk.KeyF20),
 			t.TransmissionVolUpFine: hk.New([]hk.Modifier{hk.ModCmd, hk.ModShift}, hk.KeyF20),
 		},
-		wg: sync.WaitGroup{},
+		Menu: make(map[string]*systray.MenuItem),
+		wg:   sync.WaitGroup{},
 	}
 	pi.Log.SetColorProfile(termenv.TrueColor)
 
@@ -107,29 +110,51 @@ func (pi *PhaseInverter) onScreen() {
 		pi.Log.Fatalf("error reading icon: %v", err)
 	}
 	systray.SetTemplateIcon(icon, icon)
-	spotifyItem := systray.AddMenuItem("Spotify", "Set input to Spotify")
-	phonoItem := systray.AddMenuItem("Phono", "Set input to Phono")
-	siriusItem := systray.AddMenuItem("SiriusXM", "Set input to SiriusXM radio")
-	airplayItem := systray.AddMenuItem("AirPlay", "Set input to AirPlay Receiver")
+	volumeItem := systray.AddMenuItem("Volume: 0", "Current volume")
+	volumeItem.Disable()
+	systray.AddSeparator()
+	pi.Menu[t.InputSpotify] = systray.AddMenuItem(t.InputSpotify, "Set input to Spotify")
+	pi.Menu[t.InputPhono] = systray.AddMenuItem(t.InputPhono, "Set input to Phono")
+	pi.Menu[t.InputSirius] = systray.AddMenuItem(t.InputSirius, "Set input to SiriusXM radio")
+	pi.Menu[t.InputAirplay] = systray.AddMenuItem(t.InputAirplay, "Set input to AirPlay Receiver")
 	systray.AddSeparator()
 	quitItem := systray.AddMenuItem("Quit", "Quit Phase Inverter")
 
 	go func() {
 		for {
 			select {
-			case <-spotifyItem.ClickedCh:
+			case playerState := <-pi.Transmitter.Receiver:
+				mainthread.Call(func() {
+					var title string
+					if playerState.IsPoweredOn {
+						title = progress(playerState.CurrentVolume)
+						volumeItem.SetTitle(fmt.Sprintf("Volume: %d", playerState.CurrentVolume))
+						volumeItem.Show()
+
+						if item, ok := pi.Menu[playerState.CurrentInput]; ok {
+							item.Check()
+						}
+					} else {
+						volumeItem.Hide()
+						for _, item := range pi.Menu {
+							item.Uncheck()
+						}
+					}
+					systray.SetTitle(title)
+				})
+			case <-pi.Menu[t.InputSpotify].ClickedCh:
 				mainthread.Call(func() {
 					pi.Transmitter.Transmit(t.TransmissionChangeInputSpotify)
 				})
-			case <-phonoItem.ClickedCh:
+			case <-pi.Menu[t.InputPhono].ClickedCh:
 				mainthread.Call(func() {
 					pi.Transmitter.Transmit(t.TransmissionChangeInputPhono)
 				})
-			case <-siriusItem.ClickedCh:
+			case <-pi.Menu[t.InputSirius].ClickedCh:
 				mainthread.Call(func() {
 					pi.Transmitter.Transmit(t.TransmissionChangeInputSirius)
 				})
-			case <-airplayItem.ClickedCh:
+			case <-pi.Menu[t.InputAirplay].ClickedCh:
 				mainthread.Call(func() {
 					pi.Transmitter.Transmit(t.TransmissionChangeInputAirplay)
 				})
@@ -148,4 +173,11 @@ func (pi *PhaseInverter) endTransmission() {
 		}
 		pi.Log.Infof("hotkey %s is unregistered", k)
 	}
+}
+
+func progress(i int) string {
+	chars := []string{"⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣷", "⣿"}
+	step := 100 / len(chars)
+	index := max(0, (i/step)-1)
+	return chars[index]
 }

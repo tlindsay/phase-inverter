@@ -9,8 +9,10 @@ import (
 )
 
 const (
-	brokerURL = "tcp://broker:1883"
-	qos       = 2
+	brokerURL   = "tcp://broker:1883"
+	atMostOnce  = 0
+	atLeastOnce = 1
+	exactlyOnce = 2
 )
 
 type Topic string
@@ -61,16 +63,17 @@ const (
 )
 
 type playerState struct {
-	currentVolume int
-	currentInput  string
-	isMuted       bool
-	isPoweredOn   bool
+	CurrentVolume int
+	CurrentInput  string
+	IsMuted       bool
+	IsPoweredOn   bool
 }
 
 type Transmitter struct {
-	Log    *log.Logger
-	client mqtt.Client
-	state  playerState
+	Log      *log.Logger
+	Receiver chan playerState
+	client   mqtt.Client
+	state    playerState
 }
 
 func NewTransmitter(l *log.Logger) (*Transmitter, error) {
@@ -79,7 +82,9 @@ func NewTransmitter(l *log.Logger) (*Transmitter, error) {
 		return nil, err
 	}
 
-	t := &Transmitter{Log: l, client: c}
+	l.Infof("MQTT Client initialized: %#v", c)
+
+	t := &Transmitter{Log: l, Receiver: make(chan playerState), client: c}
 
 	if err := t.setupSubscriptions(); err != nil {
 		t.Log.Errorf("failed to establish subscriptions: %v", err)
@@ -109,14 +114,14 @@ func (t *Transmitter) setupSubscriptions() error {
 	}
 
 	token := t.client.SubscribeMultiple(
-		map[string]byte{topicStatusVolume: qos, topicStatusMute: qos},
+		map[string]byte{topicStatusVolume: exactlyOnce, topicStatusMute: exactlyOnce, topicStatusPower: atLeastOnce, topicStatusInput: atLeastOnce},
 		func(c mqtt.Client, m mqtt.Message) {
 			t.Log.Debugf("Subscription event: %#v", m)
 			switch m.Topic() {
 			case topicStatusInput:
 				input := m.Payload()
 				t.Log.Infof("Input received: %s", input)
-				t.state.currentInput = string(input)
+				t.state.CurrentInput = string(input)
 			case topicStatusMute:
 				mute, err := strconv.ParseBool(string(m.Payload()))
 				if err != nil {
@@ -125,7 +130,7 @@ func (t *Transmitter) setupSubscriptions() error {
 				}
 
 				t.Log.Infof("Mute received: %t", mute)
-				t.state.isMuted = mute
+				t.state.IsMuted = mute
 			case topicStatusPower:
 				var pwr bool
 				if payload := string(m.Payload()); payload == "on" {
@@ -138,7 +143,7 @@ func (t *Transmitter) setupSubscriptions() error {
 				}
 
 				t.Log.Infof("Power received: %t", pwr)
-				t.state.isPoweredOn = pwr
+				t.state.IsPoweredOn = pwr
 			case topicStatusVolume:
 				vol, err := strconv.Atoi(string(m.Payload()))
 				if err != nil {
@@ -147,8 +152,9 @@ func (t *Transmitter) setupSubscriptions() error {
 				}
 
 				t.Log.Infof("Volume received: %d", vol)
-				t.state.currentVolume = vol
+				t.state.CurrentVolume = vol
 			}
+			t.Receiver <- t.state
 		},
 	)
 	go func() {
@@ -172,29 +178,29 @@ func (t *Transmitter) Transmit(tr Transmission) {
 
 	switch tr {
 	case TransmissionChangeInputSpotify:
-		t.Log.Infof("Changing input: %s => %s", t.state.currentInput, InputSpotify)
+		t.Log.Infof("Changing input: %s => %s", t.state.CurrentInput, InputSpotify)
 		topic = string(topicSetInput)
 		msg = []byte(InputSpotify)
 	case TransmissionChangeInputPhono:
-		t.Log.Infof("Changing input: %s => %s", t.state.currentInput, InputPhono)
+		t.Log.Infof("Changing input: %s => %s", t.state.CurrentInput, InputPhono)
 		topic = string(topicSetInput)
 		msg = []byte(InputPhono)
 	case TransmissionChangeInputSirius:
-		t.Log.Infof("Changing input: %s => %s", t.state.currentInput, InputSirius)
+		t.Log.Infof("Changing input: %s => %s", t.state.CurrentInput, InputSirius)
 		topic = string(topicSetInput)
 		msg = []byte(InputSirius)
 	case TransmissionChangeInputAirplay:
-		t.Log.Infof("Changing input: %s => %s", t.state.currentInput, InputAirplay)
+		t.Log.Infof("Changing input: %s => %s", t.state.CurrentInput, InputAirplay)
 		topic = string(topicSetInput)
 		msg = []byte(InputAirplay)
 	case TransmissionToggleMute:
-		t.Log.Infof("Changing mute: %t => %t", t.state.isMuted, !t.state.isMuted)
+		t.Log.Infof("Changing mute: %t => %t", t.state.IsMuted, !t.state.IsMuted)
 		topic = string(topicSetMute)
-		msg = []byte(strconv.FormatBool(!t.state.isMuted))
+		msg = []byte(strconv.FormatBool(!t.state.IsMuted))
 	case TransmissionTogglePower:
-		t.Log.Infof("Changing power: %t => %t", t.state.isPoweredOn, !t.state.isPoweredOn)
+		t.Log.Infof("Changing power: %t => %t", t.state.IsPoweredOn, !t.state.IsPoweredOn)
 		topic = string(topicSetPower)
-		msg = []byte(strconv.FormatBool(!t.state.isPoweredOn))
+		msg = []byte(strconv.FormatBool(!t.state.IsPoweredOn))
 	case TransmissionVolDown:
 		topic, msg, err = t.changeVolume(VOLUME_DELTA * -1)
 		if err != nil {
@@ -218,7 +224,7 @@ func (t *Transmitter) Transmit(tr Transmission) {
 	}
 
 	t.Log.Debugf("Attempting to publish to %s: %s", topic, msg)
-	token := t.client.Publish(topic, qos, false, msg)
+	token := t.client.Publish(topic, exactlyOnce, false, msg)
 	go func() {
 		<-token.Done()
 		if err := token.Error(); err != nil {
@@ -230,12 +236,12 @@ func (t *Transmitter) Transmit(tr Transmission) {
 }
 
 func (t *Transmitter) changeVolume(delta int) (topic string, msg []byte, err error) {
-	newVol, err := clamp(t.state.currentVolume+(delta), VOLUME_MIN, VOLUME_MAX)
+	newVol, err := clamp(t.state.CurrentVolume+(delta), VOLUME_MIN, VOLUME_MAX)
 	if err != nil {
 		t.Log.Errorf("error calculating new volume: %v", err)
 		return "", nil, err
 	}
-	t.Log.Infof("Changing volume: %d, +%d => %d", t.state.currentVolume, (delta), newVol)
+	t.Log.Infof("Changing volume: %d, +%d => %d", t.state.CurrentVolume, (delta), newVol)
 	return string(topicSetVolume), []byte(strconv.Itoa(newVol)), nil
 }
 
