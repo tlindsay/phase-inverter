@@ -2,15 +2,18 @@ package main
 
 import (
 	"embed"
+	"io"
 	"os"
 	"sync"
 
 	"github.com/adrg/xdg"
 	"github.com/charmbracelet/log"
 	"github.com/getlantern/systray"
-	t "github.com/tlindsay/phase-inverter/transmitter"
+	"github.com/muesli/termenv"
 	hk "golang.design/x/hotkey"
 	"golang.design/x/hotkey/mainthread"
+
+	t "github.com/tlindsay/phase-inverter/transmitter"
 )
 
 //go:embed assets/*
@@ -30,11 +33,12 @@ func main() {
 		log.Fatalf("failed to create log file: %v", err)
 		os.Exit(1)
 	}
-	logwriter, err := os.OpenFile(logPath, os.O_RDWR|os.O_CREATE, 0644)
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		log.Fatalf("failed to open log file: %v", err)
 		os.Exit(1)
 	}
+	logwriter := io.MultiWriter(os.Stderr, logFile)
 	pi := &PhaseInverter{
 		Log: log.NewWithOptions(
 			logwriter,
@@ -56,6 +60,7 @@ func main() {
 		},
 		wg: sync.WaitGroup{},
 	}
+	pi.Log.SetColorProfile(termenv.TrueColor)
 
 	t, err := t.NewTransmitter(pi.Log)
 	if err != nil {

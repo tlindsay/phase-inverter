@@ -111,7 +111,7 @@ func (t *Transmitter) setupSubscriptions() error {
 	token := t.client.SubscribeMultiple(
 		map[string]byte{topicStatusVolume: qos, topicStatusMute: qos},
 		func(c mqtt.Client, m mqtt.Message) {
-			t.Log.Infof("Subscription event: %#v", m)
+			t.Log.Debugf("Subscription event: %#v", m)
 			switch m.Topic() {
 			case topicStatusInput:
 				input := m.Payload()
