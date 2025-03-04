@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	brokerURL = "tcp://broker.local:1883"
+	brokerURL = "tcp://broker:1883"
 	qos       = 2
 )
 
