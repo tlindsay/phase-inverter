@@ -14,6 +14,7 @@ import (
 	hk "golang.design/x/hotkey"
 	"golang.design/x/hotkey/mainthread"
 
+	"github.com/tlindsay/phase-inverter/commbadge"
 	t "github.com/tlindsay/phase-inverter/transmitter"
 )
 
@@ -21,6 +22,7 @@ import (
 var fs embed.FS
 
 type PhaseInverter struct {
+	commbadge   *commbadge.CommBadge
 	Log         *log.Logger
 	Transmitter *t.Transmitter
 	Keymap      map[t.Transmission]*hk.Hotkey
@@ -41,7 +43,12 @@ func main() {
 		os.Exit(1)
 	}
 	logwriter := io.MultiWriter(os.Stderr, logFile)
+	iconBytes, err := fs.ReadFile("assets/icon.png")
+	if err != nil {
+		panic(err)
+	}
 	pi := &PhaseInverter{
+		commbadge: commbadge.New(iconBytes),
 		Log: log.NewWithOptions(
 			logwriter,
 			log.Options{
@@ -105,10 +112,7 @@ func (pi *PhaseInverter) registerHotkeys() {
 
 func (pi *PhaseInverter) onScreen() {
 	pi.Log.Infof("Bootstrapping system tray...")
-	icon, err := fs.ReadFile("assets/icon.png")
-	if err != nil {
-		pi.Log.Fatalf("error reading icon: %v", err)
-	}
+	icon := pi.commbadge.Icon
 	systray.SetTemplateIcon(icon, icon)
 	volumeItem := systray.AddMenuItem("Volume: 0", "Current volume")
 	volumeItem.Disable()
@@ -118,6 +122,7 @@ func (pi *PhaseInverter) onScreen() {
 	pi.Menu[t.InputSirius] = systray.AddMenuItem(t.InputSirius, "Set input to SiriusXM radio")
 	pi.Menu[t.InputAirplay] = systray.AddMenuItem(t.InputAirplay, "Set input to AirPlay Receiver")
 	systray.AddSeparator()
+	pwrItem := systray.AddMenuItem("Power On", "Send Power On signal")
 	quitItem := systray.AddMenuItem("Quit", "Quit Phase Inverter")
 
 	go func() {
@@ -125,22 +130,22 @@ func (pi *PhaseInverter) onScreen() {
 			select {
 			case playerState := <-pi.Transmitter.Receiver:
 				mainthread.Call(func() {
-					var title string
-					if playerState.IsPoweredOn {
-						title = progress(playerState.CurrentVolume)
-						volumeItem.SetTitle(fmt.Sprintf("Volume: %d", playerState.CurrentVolume))
-						volumeItem.Show()
+					// if playerState.IsPoweredOn {
+					volumeItem.SetTitle(fmt.Sprintf("Volume: %d", playerState.CurrentVolume))
+					volumeItem.Show()
 
-						if item, ok := pi.Menu[playerState.CurrentInput]; ok {
-							item.Check()
-						}
-					} else {
-						volumeItem.Hide()
-						for _, item := range pi.Menu {
-							item.Uncheck()
-						}
+					pi.commbadge.SetVolume(playerState.CurrentVolume)
+					systray.SetTemplateIcon(pi.commbadge.Icon, pi.commbadge.Icon)
+
+					if item, ok := pi.Menu[playerState.CurrentInput]; ok {
+						item.Check()
 					}
-					systray.SetTitle(title)
+					// } else {
+					// 	volumeItem.Hide()
+					// 	for _, item := range pi.Menu {
+					// 		item.Uncheck()
+					// 	}
+					// }
 				})
 			case <-pi.Menu[t.InputSpotify].ClickedCh:
 				mainthread.Call(func() {
@@ -158,6 +163,10 @@ func (pi *PhaseInverter) onScreen() {
 				mainthread.Call(func() {
 					pi.Transmitter.Transmit(t.TransmissionChangeInputAirplay)
 				})
+			case <-pwrItem.ClickedCh:
+				mainthread.Call(func() {
+					pi.Transmitter.Transmit(t.TransmissionPowerOn)
+				})
 			case <-quitItem.ClickedCh:
 				mainthread.Call(systray.Quit)
 			}
@@ -173,11 +182,4 @@ func (pi *PhaseInverter) endTransmission() {
 		}
 		pi.Log.Infof("hotkey %s is unregistered", k)
 	}
-}
-
-func progress(i int) string {
-	chars := []string{"⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣷", "⣿"}
-	step := 100 / len(chars)
-	index := max(0, (i/step)-1)
-	return chars[index]
 }

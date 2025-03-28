@@ -41,6 +41,7 @@ const (
 	TransmissionVolUpFine
 	TransmissionToggleMute
 	TransmissionTogglePower
+	TransmissionPowerOn
 
 	TransmissionChangeInputSpotify
 	TransmissionChangeInputPhono
@@ -133,7 +134,8 @@ func (t *Transmitter) setupSubscriptions() error {
 				t.state.IsMuted = mute
 			case topicStatusPower:
 				var pwr bool
-				if payload := string(m.Payload()); payload == "on" {
+				payload := string(m.Payload())
+				if payload == "on" {
 					pwr = true
 				} else if payload == "standby" {
 					pwr = false
@@ -142,7 +144,7 @@ func (t *Transmitter) setupSubscriptions() error {
 					return
 				}
 
-				t.Log.Infof("Power received: %t", pwr)
+				t.Log.Infof("Power received: %s", payload)
 				t.state.IsPoweredOn = pwr
 			case topicStatusVolume:
 				vol, err := strconv.Atoi(string(m.Payload()))
@@ -201,6 +203,10 @@ func (t *Transmitter) Transmit(tr Transmission) {
 		t.Log.Infof("Changing power: %t => %t", t.state.IsPoweredOn, !t.state.IsPoweredOn)
 		topic = string(topicSetPower)
 		msg = []byte(strconv.FormatBool(!t.state.IsPoweredOn))
+	case TransmissionPowerOn:
+		t.Log.Infof("Forcing power: %t", true)
+		topic = string(topicSetPower)
+		msg = []byte(strconv.FormatBool(true))
 	case TransmissionVolDown:
 		topic, msg, err = t.changeVolume(VOLUME_DELTA * -1)
 		if err != nil {
