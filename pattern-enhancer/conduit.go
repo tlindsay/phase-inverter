@@ -9,11 +9,12 @@ import (
 // Display is what a UI renders: a volume that tracks the knob, plus enough
 // context to be honest about how much of it is actually known to be true.
 type Display struct {
-	Volume int
-	Input  string
-	Power  Power
-	Mute   bool
-	Range  Range
+	Volume  int
+	Input   string
+	Power   Power
+	Mute    bool
+	Range   Range
+	Playing Playing
 
 	// Confirmed is false while local motion is still unacknowledged. A UI
 	// should render an unconfirmed value differently rather than presenting a
@@ -98,6 +99,7 @@ func (c *Conduit) Display() Display {
 		Power:     st.Power,
 		Mute:      st.Mute,
 		Range:     st.Range,
+		Playing:   st.Playing,
 		Confirmed: c.tracker.Outstanding() == 0,
 		Connected: connected,
 		Online:    st.Online,
@@ -112,6 +114,23 @@ func (c *Conduit) SetInput(ctx context.Context, input string) error {
 	}
 	c.tracker.Settle(st, 0)
 	return nil
+}
+
+// RecallPreset selects a stored station, settling the display on the daemon's
+// answer exactly as SetInput does — a recall changes the input too.
+func (c *Conduit) RecallPreset(ctx context.Context, num int) error {
+	st, err := c.client.RecallPreset(ctx, num)
+	if err != nil {
+		return err
+	}
+	c.tracker.Settle(st, 0)
+	return nil
+}
+
+// Presets lists the stations the daemon can recall. Pass-through: there is no
+// state to track and nothing to predict.
+func (c *Conduit) Presets(ctx context.Context) ([]Preset, error) {
+	return c.client.Presets(ctx)
 }
 
 // TogglePower flips power at the receiver.

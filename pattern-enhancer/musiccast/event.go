@@ -12,6 +12,13 @@ type Event struct {
 	Power    *string
 	Input    *string
 
+	// PlayInfoUpdated reports that the network source changed what it is
+	// playing — a new station, or just the next track on the current one.
+	//
+	// A flag rather than the play info itself: the datagram says only that
+	// something changed, and the detail has to be fetched with getPlayInfo.
+	PlayInfoUpdated bool
+
 	// Raw is the original datagram, kept for diagnostics.
 	//
 	// The receiver pushes a great deal this daemon does not model — netusb
@@ -30,9 +37,18 @@ type zonePayload struct {
 	Input  *string `json:"input"`
 }
 
+// netusbPayload is the netusb object inside an event. The receiver pushes one
+// of these whenever the current network source changes what it is playing,
+// which is how a station change made on the phone app or the remote reaches
+// this daemon without waiting for the next poll.
+type netusbPayload struct {
+	PlayInfoUpdated bool `json:"play_info_updated"`
+}
+
 type eventPayload struct {
-	DeviceID string       `json:"device_id"`
-	Main     *zonePayload `json:"main"`
+	DeviceID string         `json:"device_id"`
+	Main     *zonePayload   `json:"main"`
+	Netusb   *netusbPayload `json:"netusb"`
 }
 
 // ParseEvent decodes a single UDP datagram from the receiver.
@@ -54,6 +70,9 @@ func ParseEvent(b []byte) (Event, error) {
 		ev.Mute = p.Main.Mute
 		ev.Power = p.Main.Power
 		ev.Input = p.Main.Input
+	}
+	if p.Netusb != nil {
+		ev.PlayInfoUpdated = p.Netusb.PlayInfoUpdated
 	}
 	return ev, nil
 }

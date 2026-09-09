@@ -16,6 +16,12 @@ type fakeDevice struct {
 	status    musiccast.Status
 	muteSetTo *bool
 	polls     int
+
+	playInfo      musiccast.PlayInfo
+	playInfoErr   error
+	playInfoCalls int
+	presets       []pe.Preset
+	recalled      int
 }
 
 func newFakeDevice() *fakeDevice {
@@ -55,6 +61,38 @@ func (f *fakeDevice) SetMute(_ context.Context, on bool) error {
 	defer f.mu.Unlock()
 	f.muteSetTo = &on
 	return nil
+}
+
+func (f *fakeDevice) GetPlayInfo(context.Context) (musiccast.PlayInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.playInfoCalls++
+	if f.playInfoErr != nil {
+		return musiccast.PlayInfo{}, f.playInfoErr
+	}
+	return f.playInfo, nil
+}
+
+func (f *fakeDevice) GetPresetInfo(context.Context) ([]pe.Preset, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.presets, nil
+}
+
+// RecallPreset moves the fake's own input, the way the real recall does: the
+// receiver switches to the preset's source as part of recalling it.
+func (f *fakeDevice) RecallPreset(_ context.Context, num int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recalled = num
+	f.status.Input = "siriusxm"
+	return nil
+}
+
+func (f *fakeDevice) playInfoCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.playInfoCalls
 }
 
 func (f *fakeDevice) pollCount() int {
@@ -179,6 +217,25 @@ func (u *unreachableDevice) SetInput(context.Context, string) error       { retu
 func (u *unreachableDevice) SetPower(context.Context, bool) error         { return errUnreachable }
 func (u *unreachableDevice) TogglePower(context.Context) error            { return errUnreachable }
 func (u *unreachableDevice) SetMute(context.Context, bool) error          { return errUnreachable }
+func (u *unreachableDevice) RecallPreset(context.Context, int) error      { return errUnreachable }
+
+func (u *unreachableDevice) GetPlayInfo(context.Context) (musiccast.PlayInfo, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !u.awake {
+		return musiccast.PlayInfo{}, errUnreachable
+	}
+	return musiccast.PlayInfo{}, nil
+}
+
+func (u *unreachableDevice) GetPresetInfo(context.Context) ([]pe.Preset, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !u.awake {
+		return nil, errUnreachable
+	}
+	return nil, nil
+}
 
 func TestRunSurvivesAnUnreachableReceiverAndConvergesLater(t *testing.T) {
 	fake := &unreachableDevice{status: musiccast.Status{
@@ -350,4 +407,113 @@ func (u *unreachableDevice) GetVolumeRange(context.Context) (pe.Range, error) {
 		return pe.Range{}, errUnreachable
 	}
 	return pe.Range{Min: 0, Max: 80, Step: 1}, nil
+}
+
+func TestReconcileFoldsInPlayInfoForTheSelectedInput(t *testing.T) {
+	d, fake := newTestDevice(t, nil)
+	fake.status.Input = "siriusxm"
+	fake.playInfo = musiccast.PlayInfo{
+		Input:  "siriusxm",
+		Artist: "National",
+		Album:  "35 : SiriusXMU / Indie & beyond",
+		Track:  "Mistaken For Strangers",
+	}
+
+	d.reconcile(context.Background())
+
+	got := d.State().Playing
+	if got.Track != "Mistaken For Strangers" || got.Artist != "National" {
+		t.Errorf("Playing = %+v, want the track the source reported", got)
+	}
+}
+
+func TestReconcileDropsPlayInfoDescribingAnotherInput(t *testing.T) {
+	d, fake := newTestDevice(t, nil)
+
+	// The turntable is playing, but netusb still answers with the SiriusXM
+	// session from earlier. Reporting that would tell the user their record is
+	// a song on a channel they are not listening to.
+	fake.status.Input = "phono"
+	fake.playInfo = musiccast.PlayInfo{
+		Input:  "siriusxm",
+		Artist: "National",
+		Track:  "Mistaken For Strangers",
+	}
+
+	d.reconcile(context.Background())
+
+	if got := d.State().Playing; got != (pe.Playing{}) {
+		t.Errorf("Playing = %+v while on phono, want it empty", got)
+	}
+}
+
+func TestPlayInfoFailureLeavesTheReceiverOnline(t *testing.T) {
+	d, fake := newTestDevice(t, nil)
+	fake.playInfoErr = errors.New("netusb busy")
+
+	d.reconcile(context.Background())
+
+	// getStatus answered, which is what proves the receiver is reachable. A
+	// failed second call about what is playing must not contradict it.
+	if !d.State().Online {
+		t.Error("State().Online = false after a play-info failure; getStatus succeeded")
+	}
+}
+
+func TestPlayInfoUpdatedEventFetchesTheDetail(t *testing.T) {
+	d, fake := newTestDevice(t, nil)
+	fake.status.Input = "siriusxm"
+	fake.playInfo = musiccast.PlayInfo{
+		Input: "siriusxm", Track: "Bloodbuzz Ohio", Artist: "The National",
+	}
+
+	events := make(chan musiccast.Event)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A long poll interval, so anything that arrives came from the event
+	// rather than from the loop coming round again.
+	go d.Run(ctx, events, time.Hour)
+
+	events <- musiccast.Event{Input: strPtr("siriusxm"), PlayInfoUpdated: true}
+
+	waitFor(t, func() bool {
+		return d.State().Playing.Track == "Bloodbuzz Ohio"
+	}, "state never picked up the pushed play info")
+
+	if fake.playInfoCallCount() == 0 {
+		t.Error("the push never triggered a getPlayInfo")
+	}
+}
+
+func TestRecallPresetLeavesStateAlreadyUpdated(t *testing.T) {
+	d, fake := newTestDevice(t, nil)
+
+	if err := d.RecallPreset(context.Background(), 2); err != nil {
+		t.Fatalf("RecallPreset returned error: %v", err)
+	}
+
+	if fake.recalled != 2 {
+		t.Errorf("recalled preset %d, want 2", fake.recalled)
+	}
+	// A recall switches the input too, and the command handler answers from
+	// State the moment this returns.
+	if got := d.State().Input; got != "siriusxm" {
+		t.Errorf("State().Input = %q after a recall, want %q", got, "siriusxm")
+	}
+}
+
+func TestPresetsPassThroughToTheReceiver(t *testing.T) {
+	d, fake := newTestDevice(t, nil)
+	fake.presets = []pe.Preset{
+		{Num: 1, Input: "siriusxm", Text: "36 : Alt Nation / New Alternative Rock"},
+	}
+
+	got, err := d.Presets(context.Background())
+	if err != nil {
+		t.Fatalf("Presets returned error: %v", err)
+	}
+	if len(got) != 1 || got[0].Num != 1 {
+		t.Errorf("Presets = %+v, want the receiver's list verbatim", got)
+	}
 }

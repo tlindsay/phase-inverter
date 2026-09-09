@@ -19,6 +19,9 @@ import (
 type DeviceClient interface {
 	GetStatus(ctx context.Context) (musiccast.Status, error)
 	GetVolumeRange(ctx context.Context) (pe.Range, error)
+	GetPlayInfo(ctx context.Context) (musiccast.PlayInfo, error)
+	GetPresetInfo(ctx context.Context) ([]pe.Preset, error)
+	RecallPreset(ctx context.Context, num int) error
 	SetVolumeRelative(ctx context.Context, steps int) error
 	SetInput(ctx context.Context, input string) error
 	SetPower(ctx context.Context, on bool) error
@@ -98,6 +101,22 @@ func (d *Device) SetMute(ctx context.Context, on bool) error {
 	return d.afterWrite(ctx, d.client.SetMute(ctx, on))
 }
 
+// RecallPreset selects a stored station. The recall switches the input too, so
+// this works from phono as well as from another station.
+func (d *Device) RecallPreset(ctx context.Context, num int) error {
+	return d.afterWrite(ctx, d.client.RecallPreset(ctx, num))
+}
+
+// Presets lists the stations stored on the receiver.
+//
+// Read straight through to the device rather than cached. The list changes only
+// when someone saves a preset from the remote, and a cache would have to watch
+// for that to avoid going stale — bookkeeping that costs more than the one
+// 20ms call a client makes when it builds its menu.
+func (d *Device) Presets(ctx context.Context) ([]pe.Preset, error) {
+	return d.client.GetPresetInfo(ctx)
+}
+
 // afterWrite refreshes state following a successful command, so the caller can
 // report the post-command value instead of the pre-command cache.
 //
@@ -147,6 +166,13 @@ func (d *Device) Run(ctx context.Context, events <-chan musiccast.Event, pollInt
 			d.mu.Unlock()
 
 			next := d.store.ApplyEvent(ev)
+			// The datagram says only that the source changed what it is
+			// playing, never what it changed to, so the detail has to be
+			// fetched. Worth the round trip: without it a station change made
+			// on the remote would not show up until the next poll.
+			if ev.PlayInfoUpdated {
+				next = d.refreshPlaying(ctx, next.Input, next)
+			}
 			// Debug rather than info: a busy evening of knob-turning would
 			// otherwise fill the journal.
 			log.Debug("udp event", "event", describeEvent(ev), "seq", next.Seq,
@@ -198,9 +224,45 @@ func (d *Device) reconcile(ctx context.Context) {
 	}
 
 	next := d.store.ApplySnapshot(status)
+	next = d.refreshPlaying(ctx, status.Input, next)
 	log.Debug("reconcile", "seq", next.Seq, "volume", next.Volume,
-		"power", next.Power, "input", next.Input, "mute", next.Mute)
+		"power", next.Power, "input", next.Input, "mute", next.Mute,
+		"track", next.Playing.Track)
 	d.emit(next)
+}
+
+// refreshPlaying folds in what the current source is playing, returning the
+// state to publish — current if the fetch failed, updated if it worked.
+//
+// A failure here must not mark the receiver offline. getStatus succeeding is
+// what proves the receiver is reachable; this is a second call about a detail,
+// and letting it override that would report the stereo as gone every time a
+// netusb query happened to fail.
+func (d *Device) refreshPlaying(ctx context.Context, input string, current pe.State) pe.State {
+	info, err := d.client.GetPlayInfo(ctx)
+	if err != nil {
+		log.Debug("play info unavailable", "err", err)
+		return current
+	}
+	return d.store.ApplyPlaying(playingFor(input, info))
+}
+
+// playingFor discards play info describing some other source.
+//
+// getPlayInfo answers with the last netusb session regardless of what the zone
+// is listening to now, so while a record is playing it still reports the
+// SiriusXM channel from an hour ago. Only info whose own input matches the
+// selected one is true, and everything else is better shown as nothing at all
+// than as a confident lie about what is coming out of the speakers.
+func playingFor(input string, info musiccast.PlayInfo) pe.Playing {
+	if info.Input != input {
+		return pe.Playing{}
+	}
+	return pe.Playing{
+		Artist: info.Artist,
+		Album:  info.Album,
+		Track:  info.Track,
+	}
 }
 
 // describeEvent renders only the fields an event actually carried, so the log
@@ -218,6 +280,9 @@ func describeEvent(ev musiccast.Event) string {
 	}
 	if ev.Input != nil {
 		parts = append(parts, "input="+*ev.Input)
+	}
+	if ev.PlayInfoUpdated {
+		parts = append(parts, "play_info_updated")
 	}
 	if len(parts) == 0 {
 		// Nothing this daemon models — almost always a netusb play-info

@@ -100,3 +100,72 @@ func TestGetVolumeRangeErrorsWhenVolumeEntryMissing(t *testing.T) {
 		t.Fatal("expected an error when no volume range is advertised, got nil")
 	}
 }
+
+// realPresetInfoJSON is the office R-N303's actual reply to
+// netusb/getPresetInfo, trimmed to the first stored slots and one empty one.
+// The empties are the point: the device always answers with all forty.
+const realPresetInfoJSON = `{"response_code":0,"preset_info":[
+  {"input":"siriusxm","text":"36 : Alt Nation / New Alternative Rock","attribute":0},
+  {"input":"siriusxm","text":"35 : SiriusXMU / Indie & Beyond","attribute":0},
+  {"input":"unknown","text":""}]}`
+
+// realPlayInfoJSON is the reply captured while SiriusXMU was playing.
+const realPlayInfoJSON = `{"response_code":0,"input":"siriusxm","playback":"play",
+"artist":"National","album":"35 : SiriusXMU / Indie & beyond",
+"track":"Mistaken For Strangers","albumart_id":4417}`
+
+func TestRecallPresetSendsZoneAndSlot(t *testing.T) {
+	rec := newRecorder(t, `{"response_code":0}`)
+
+	if err := rec.client().RecallPreset(context.Background(), 2); err != nil {
+		t.Fatalf("RecallPreset returned error: %v", err)
+	}
+
+	q := rec.lastQuery(t)
+	if got := q.Get("num"); got != "2" {
+		t.Errorf("num = %q, want %q", got, "2")
+	}
+	// The zone is not optional: without it the receiver has no idea which
+	// output to move, and answers with an error rather than a guess.
+	if got := q.Get("zone"); got != "main" {
+		t.Errorf("zone = %q, want %q", got, "main")
+	}
+}
+
+func TestGetPresetInfoNumbersSlotsAndDropsEmpties(t *testing.T) {
+	rec := newRecorder(t, realPresetInfoJSON)
+
+	got, err := rec.client().GetPresetInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetPresetInfo returned error: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("got %d presets, want the 2 that are stored", len(got))
+	}
+	// Numbered from one, because that is the slot recallPreset expects.
+	if got[0].Num != 1 || got[1].Num != 2 {
+		t.Errorf("slot numbers = %d, %d; want 1, 2", got[0].Num, got[1].Num)
+	}
+	if got[1].Text != "35 : SiriusXMU / Indie & Beyond" {
+		t.Errorf("Text = %q, want the receiver's own label", got[1].Text)
+	}
+}
+
+func TestGetPlayInfoDecodesRealPayload(t *testing.T) {
+	rec := newRecorder(t, realPlayInfoJSON)
+
+	got, err := rec.client().GetPlayInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetPlayInfo returned error: %v", err)
+	}
+
+	if got.Track != "Mistaken For Strangers" || got.Artist != "National" {
+		t.Errorf("PlayInfo = %+v, want the captured track", got)
+	}
+	// Input is what lets a caller tell whether this describes the source the
+	// zone is actually listening to.
+	if got.Input != "siriusxm" {
+		t.Errorf("Input = %q, want %q", got.Input, "siriusxm")
+	}
+}

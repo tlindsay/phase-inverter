@@ -30,6 +30,8 @@ type Backend interface {
 	TogglePower(ctx context.Context) error
 	SetMute(ctx context.Context, on bool) error
 	ToggleMute(ctx context.Context) error
+	RecallPreset(ctx context.Context, num int) error
+	Presets(ctx context.Context) ([]pe.Preset, error)
 }
 
 // Server routes HTTP for a single named device and fans state out to SSE
@@ -64,6 +66,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/devices/{id}/mute", s.withDevice(s.handleMute))
 	mux.HandleFunc("POST /v1/devices/{id}/input", s.withDevice(s.handleInput))
 	mux.HandleFunc("POST /v1/devices/{id}/power", s.withDevice(s.handlePower))
+	mux.HandleFunc("POST /v1/devices/{id}/preset", s.withDevice(s.handlePreset))
+	mux.HandleFunc("GET /v1/devices/{id}/presets", s.withDevice(s.handlePresets))
 	return mux
 }
 
@@ -118,6 +122,10 @@ type toggleCmd struct {
 
 type inputCmd struct {
 	Input string `json:"input"`
+}
+
+type presetCmd struct {
+	Num int `json:"num"`
 }
 
 func (s *Server) handleVolume(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +183,46 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	s.runCommand(w, r, func() error {
 		return s.backend.SetInput(r.Context(), cmd.Input)
 	})
+}
+
+// handlePreset recalls a stored station by slot number.
+//
+// Only the lower bound is checked here. How many presets exist is the device's
+// business — it advertises forty and rejects anything past that with a response
+// code, which surfaces as a 502 carrying the device's own complaint. Duplicating
+// that ceiling in the daemon would mean maintaining a second copy of a number
+// only the receiver actually knows.
+func (s *Server) handlePreset(w http.ResponseWriter, r *http.Request) {
+	var cmd presetCmd
+	if !decodeBody(w, r, &cmd) {
+		return
+	}
+	if cmd.Num < 1 {
+		http.Error(w, "num must be 1 or greater", http.StatusBadRequest)
+		return
+	}
+	s.runCommand(w, r, func() error {
+		return s.backend.RecallPreset(r.Context(), cmd.Num)
+	})
+}
+
+// handlePresets lists the stations the receiver has stored.
+//
+// A read rather than a command, so it does not go through runCommand: there is
+// no state change to report, and a failure here says the receiver is
+// unreachable rather than that anything was refused.
+func (s *Server) handlePresets(w http.ResponseWriter, r *http.Request) {
+	presets, err := s.backend.Presets(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	// An empty list is [], never null: a client iterating the reply should not
+	// have to special-case a receiver with no presets saved.
+	if presets == nil {
+		presets = []pe.Preset{}
+	}
+	writeJSON(w, http.StatusOK, presets)
 }
 
 // runCommand executes a device command and replies with authoritative state.

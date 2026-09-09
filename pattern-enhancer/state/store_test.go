@@ -85,3 +85,25 @@ func TestApplyEventUpdatesInputAndPower(t *testing.T) {
 		t.Error("Mute = false, want true")
 	}
 }
+
+func TestApplyPlayingBumpsSeqOnlyWhenTheTrackChanges(t *testing.T) {
+	m := newTestStore()
+	playing := pe.Playing{Artist: "National", Track: "Mistaken For Strangers"}
+
+	first := m.ApplyPlaying(playing)
+	if first.Playing != playing {
+		t.Fatalf("Playing = %+v, want %+v", first.Playing, playing)
+	}
+
+	// The receiver re-reports the same track constantly while a station plays.
+	// Treating each as a change would wake every SSE subscriber for nothing.
+	again := m.ApplyPlaying(playing)
+	if again.Seq != first.Seq {
+		t.Errorf("Seq = %d for an unchanged track, want %d", again.Seq, first.Seq)
+	}
+
+	next := m.ApplyPlaying(pe.Playing{Artist: "National", Track: "Bloodbuzz Ohio"})
+	if next.Seq != first.Seq+1 {
+		t.Errorf("Seq = %d after a new track, want %d", next.Seq, first.Seq+1)
+	}
+}

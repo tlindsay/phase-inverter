@@ -177,3 +177,33 @@ func waitUntil(t *testing.T, limit time.Duration, cond func() bool, what string)
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+func TestConduitRecallPresetSettlesTheDisplay(t *testing.T) {
+	_, cd := liveConduit(t, 30*time.Millisecond)
+
+	if err := cd.RecallPreset(context.Background(), 2); err != nil {
+		t.Fatalf("RecallPreset returned error: %v", err)
+	}
+
+	// The command's own response is authoritative, so the menu reflects the
+	// new station without waiting for the event stream to catch up.
+	d := cd.Display()
+	if d.Input != "siriusxm" {
+		t.Errorf("Display().Input = %q, want %q", d.Input, "siriusxm")
+	}
+	if d.Playing.Album != "35 : SiriusXMU / Indie & Beyond" {
+		t.Errorf("Display().Playing.Album = %q, want the recalled station", d.Playing.Album)
+	}
+}
+
+func TestConduitListsStationsFromTheDaemon(t *testing.T) {
+	_, cd := liveConduit(t, 30*time.Millisecond)
+
+	got, err := cd.Presets(context.Background())
+	if err != nil {
+		t.Fatalf("Presets returned error: %v", err)
+	}
+	if len(got) != 2 || got[1].Num != 2 {
+		t.Errorf("Presets = %+v, want the daemon's two stations", got)
+	}
+}

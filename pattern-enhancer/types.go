@@ -23,6 +23,37 @@ type Range struct {
 	Step int `json:"step"`
 }
 
+// Playing is what the receiver's current network source is playing.
+//
+// Only the netusb inputs report this — SiriusXM, Spotify, net radio — so it is
+// zero for phono and the line inputs, and zero means "nothing to say" rather
+// than "unknown". The daemon clears it rather than letting a stale track linger
+// from whatever was streaming before someone dropped the needle on a record.
+//
+// Comparable on purpose, like every other part of State: adding a slice or a
+// map here would break the equality check that decides whether anything
+// actually changed.
+type Playing struct {
+	Artist string `json:"artist,omitempty"`
+	Album  string `json:"album,omitempty"`
+	Track  string `json:"track,omitempty"`
+}
+
+// Preset is one station stored on the receiver.
+//
+// Num is the slot to recall, counted from one. Text is the receiver's own label
+// for it — for SiriusXM that is the channel number, name and description in a
+// single string ("35 : SiriusXMU / Indie & Beyond"), which is what a station
+// menu should display rather than anything this system invents.
+//
+// Presets live outside State: the list is long, changes only when someone saves
+// a preset, and is not something a client needs pushed to it.
+type Preset struct {
+	Num   int    `json:"num"`
+	Input string `json:"input"`
+	Text  string `json:"text"`
+}
+
 // State is an authoritative snapshot of one receiver, as the daemon sees it.
 //
 // Seq increases on every real change and never resets while the daemon runs.
@@ -47,6 +78,10 @@ type State struct {
 	Mute   bool   `json:"mute"`
 	Input  string `json:"input"`
 	Range  Range  `json:"range"`
+
+	// Playing is what the current source is playing, when it is a source that
+	// reports such a thing. See Playing.
+	Playing Playing `json:"playing"`
 
 	// Online reports whether the daemon can currently reach the receiver.
 	//

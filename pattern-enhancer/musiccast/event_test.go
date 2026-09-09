@@ -63,3 +63,33 @@ func TestParseEventLeavesUnchangedFieldsNil(t *testing.T) {
 		t.Errorf("Input = %v, want nil for a volume-only event", *ev.Input)
 	}
 }
+
+func TestParseEventFlagsPlayInfoUpdates(t *testing.T) {
+	// Captured verbatim from the office R-N303 when the station changed.
+	const netusbEvent = `{"netusb":{"play_info_updated":true},"device_id":"00A0DE000000"}`
+
+	ev, err := ParseEvent([]byte(netusbEvent))
+	if err != nil {
+		t.Fatalf("ParseEvent returned error: %v", err)
+	}
+
+	if !ev.PlayInfoUpdated {
+		t.Error("PlayInfoUpdated = false for a netusb play-info push")
+	}
+	// The push says only that something changed; the zone fields stay untouched
+	// because the datagram carries nothing about them.
+	if ev.Volume != nil || ev.Power != nil || ev.Input != nil {
+		t.Error("a netusb push must not set any main-zone field")
+	}
+}
+
+func TestParseEventLeavesPlayInfoUnflaggedForZoneEvents(t *testing.T) {
+	ev, err := ParseEvent([]byte(realVolumeEvent))
+	if err != nil {
+		t.Fatalf("ParseEvent returned error: %v", err)
+	}
+
+	if ev.PlayInfoUpdated {
+		t.Error("PlayInfoUpdated = true for a volume event")
+	}
+}

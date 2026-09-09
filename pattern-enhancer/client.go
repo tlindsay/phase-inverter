@@ -75,6 +75,41 @@ func (c *Client) ToggleMute(ctx context.Context) (State, error) {
 	return c.post(ctx, "mute", map[string]any{"toggle": true})
 }
 
+// RecallPreset selects a stored station by slot number.
+func (c *Client) RecallPreset(ctx context.Context, num int) (State, error) {
+	return c.post(ctx, "preset", map[string]any{"num": num})
+}
+
+// Presets lists the stations the receiver has stored.
+//
+// The only call here that answers with something other than State, because it
+// describes the receiver's configuration rather than its current condition. A
+// UI fetches this once to build a menu; everything that changes moment to
+// moment arrives as State.
+func (c *Client) Presets(ctx context.Context) ([]Preset, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.devicePath("presets"), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("pattern-enhancer: %s %s returned HTTP %d",
+			req.Method, req.URL.Path, resp.StatusCode)
+	}
+
+	var presets []Preset
+	if err := json.NewDecoder(resp.Body).Decode(&presets); err != nil {
+		return nil, fmt.Errorf("pattern-enhancer: decoding presets: %w", err)
+	}
+	return presets, nil
+}
+
 func (c *Client) post(ctx context.Context, suffix string, body map[string]any) (State, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {

@@ -71,13 +71,33 @@ const (
 	fineFraction   = 0.025
 )
 
+// Station menu slots are created empty and filled once the daemon answers.
+//
+// systray can only append items, so anything added after the menu is built
+// lands below Quit. The stations are therefore reserved up front and stay
+// hidden until there is something to put in them — which is not at launch,
+// because the daemon is routinely unreachable then. Forty is what the receiver
+// stores, so no real preset can outrun the slots.
+const stationSlots = 40
+
+// stationRetryDelay paces retries of the station list. Slow: this is a menu
+// that fills in, not a control path anyone is waiting on.
+const stationRetryDelay = 5 * time.Second
+
 type PhaseInverter struct {
 	commbadge *commbadge.CommBadge
 	Log       *log.Logger
 	Conduit   *pe.Conduit
 	Keymap    map[Transmission]*hk.Hotkey
 	Menu      map[string]*systray.MenuItem
+	Stations  []*systray.MenuItem
 	wg        sync.WaitGroup
+
+	// stationNums maps a station slot to the preset it currently shows. Guarded
+	// because it is written by the goroutine that loads the list and read by
+	// the one handling clicks.
+	stationMu   sync.Mutex
+	stationNums []int
 }
 
 func main() {
@@ -136,7 +156,7 @@ func main() {
 
 	mainthread.Init(func() {
 		go pi.registerHotkeys()
-		systray.Register(pi.onScreen, pi.endTransmission)
+		systray.Register(func() { pi.onScreen(ctx) }, pi.endTransmission)
 		pi.wg.Wait()
 	})
 }
@@ -222,7 +242,7 @@ func (pi *PhaseInverter) registerHotkeys() {
 	}
 }
 
-func (pi *PhaseInverter) onScreen() {
+func (pi *PhaseInverter) onScreen(ctx context.Context) {
 	pi.Log.Infof("Bootstrapping system tray...")
 
 	icon := pi.commbadge.Icon
@@ -230,6 +250,11 @@ func (pi *PhaseInverter) onScreen() {
 
 	volumeItem := systray.AddMenuItem("Volume: --", "Current volume")
 	volumeItem.Disable()
+
+	playingItem := systray.AddMenuItem("", "What the current source is playing")
+	playingItem.Disable()
+	playingItem.Hide()
+
 	systray.AddSeparator()
 
 	for _, id := range menuOrder {
@@ -238,11 +263,106 @@ func (pi *PhaseInverter) onScreen() {
 	}
 
 	systray.AddSeparator()
+	for range stationSlots {
+		item := systray.AddMenuItem("", "")
+		item.Hide()
+		pi.Stations = append(pi.Stations, item)
+	}
+
+	systray.AddSeparator()
 	pwrItem := systray.AddMenuItem("Power On", "Send Power On signal")
 	quitItem := systray.AddMenuItem("Quit", "Quit Phase Inverter")
 
 	go pi.watchMenu(volumeItem, pwrItem, quitItem)
-	go pi.render(volumeItem)
+	go pi.render(volumeItem, playingItem)
+	go pi.loadStations(ctx)
+}
+
+// loadStations fills the station slots from whatever the daemon reports.
+//
+// Retried rather than fetched once, for the same reason the app establishes no
+// connection at launch: it routinely starts while the daemon is unreachable,
+// and a station menu that stayed empty until the next launch would be worse
+// than one that appears a few seconds late.
+//
+// The stations come from the receiver, never from a list compiled here. What is
+// stored in those slots is whatever was saved from the remote, and this app has
+// no business having an opinion about it.
+func (pi *PhaseInverter) loadStations(ctx context.Context) {
+	for {
+		fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		presets, err := pi.Conduit.Presets(fetchCtx)
+		cancel()
+
+		if err == nil {
+			pi.showStations(presets)
+			return
+		}
+		pi.Log.Debugf("station list unavailable, retrying: %v", err)
+
+		select {
+		case <-time.After(stationRetryDelay):
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// showStations paints the preset list into the reserved slots.
+func (pi *PhaseInverter) showStations(presets []pe.Preset) {
+	if len(presets) > len(pi.Stations) {
+		presets = presets[:len(pi.Stations)]
+	}
+
+	nums := make([]int, len(presets))
+	for i, p := range presets {
+		nums[i] = p.Num
+	}
+
+	// Recorded before the items appear, so a click cannot arrive against a slot
+	// whose preset number is not known yet.
+	pi.stationMu.Lock()
+	pi.stationNums = nums
+	pi.stationMu.Unlock()
+
+	mainthread.Call(func() {
+		for i, item := range pi.Stations {
+			if i >= len(presets) {
+				item.Hide()
+				continue
+			}
+			item.SetTitle(presets[i].Text)
+			item.SetTooltip(fmt.Sprintf("Recall preset %d", presets[i].Num))
+			item.Show()
+		}
+	})
+	pi.Log.Infof("station menu loaded: %d presets", len(presets))
+}
+
+// recallStation selects the station in a menu slot.
+//
+// Not a Transmission: those are the fixed, hotkey-shaped intents this app knows
+// about at compile time, and stations are discovered from the daemon at
+// runtime, so there is no set to enumerate.
+func (pi *PhaseInverter) recallStation(slot int) {
+	pi.stationMu.Lock()
+	known := slot < len(pi.stationNums)
+	var num int
+	if known {
+		num = pi.stationNums[slot]
+	}
+	pi.stationMu.Unlock()
+
+	if !known {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := pi.Conduit.RecallPreset(ctx, num); err != nil {
+		pi.Log.Errorf("recalling preset %d failed: %v", num, err)
+	}
 }
 
 // render repaints the tray from the conduit's display.
@@ -251,7 +371,7 @@ func (pi *PhaseInverter) onScreen() {
 // reasons — local prediction and daemon updates — and a poll collapses both
 // into one repaint path at a rate the UI can actually keep up with. At 60ms a
 // spinning encoder still looks continuous.
-func (pi *PhaseInverter) render(volumeItem *systray.MenuItem) {
+func (pi *PhaseInverter) render(volumeItem, playingItem *systray.MenuItem) {
 	ticker := time.NewTicker(60 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -266,6 +386,17 @@ func (pi *PhaseInverter) render(volumeItem *systray.MenuItem) {
 		mainthread.Call(func() {
 			volumeItem.SetTitle(pi.volumeTitle(d))
 			volumeItem.Show()
+
+			// Hidden rather than blank when the source reports nothing: phono
+			// and the line inputs never do, and an empty row would read as a
+			// missing value rather than as an input that has none to give.
+			if title := playingTitle(d.Playing); title != "" {
+				playingItem.SetTitle(title)
+				playingItem.SetTooltip(d.Playing.Album)
+				playingItem.Show()
+			} else {
+				playingItem.Hide()
+			}
 
 			pi.commbadge.SetVolume(pi.percent(d))
 			systray.SetTemplateIcon(pi.commbadge.Icon, pi.commbadge.Icon)
@@ -306,6 +437,22 @@ func (pi *PhaseInverter) volumeTitle(d pe.Display) string {
 	}
 }
 
+// playingTitle renders what is playing in one line.
+//
+// Falls back to the album because that is where SiriusXM puts the channel
+// ("35 : SiriusXMU / Indie & Beyond"): between songs, or on a talk channel,
+// the station is still worth showing when the track is not.
+func playingTitle(p pe.Playing) string {
+	switch {
+	case p.Track != "" && p.Artist != "":
+		return p.Track + " — " + p.Artist
+	case p.Track != "":
+		return p.Track
+	default:
+		return p.Album
+	}
+}
+
 // percent converts device units to the 0-100 the icon's bar expects.
 func (pi *PhaseInverter) percent(d pe.Display) int {
 	span := d.Range.Max - d.Range.Min
@@ -325,6 +472,18 @@ func (pi *PhaseInverter) watchMenu(volumeItem, pwrItem, quitItem *systray.MenuIt
 		}(id, item)
 	}
 
+	// Watched from the moment the menu exists, not from when the stations
+	// arrive: the slots are already there, and wiring them once avoids a second
+	// set of goroutines racing the list load.
+	stationClicks := make(chan int)
+	for slot, item := range pi.Stations {
+		go func(slot int, item *systray.MenuItem) {
+			for range item.ClickedCh {
+				stationClicks <- slot
+			}
+		}(slot, item)
+	}
+
 	for {
 		select {
 		case id := <-inputClicks:
@@ -338,6 +497,8 @@ func (pi *PhaseInverter) watchMenu(volumeItem, pwrItem, quitItem *systray.MenuIt
 			case InputAirplay:
 				pi.transmit(TransmissionChangeInputAirplay)
 			}
+		case slot := <-stationClicks:
+			pi.recallStation(slot)
 		case <-pwrItem.ClickedCh:
 			pi.transmit(TransmissionPowerOn)
 		case <-quitItem.ClickedCh:

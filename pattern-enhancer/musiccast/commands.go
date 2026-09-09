@@ -84,3 +84,57 @@ func (c *Client) GetVolumeRange(ctx context.Context) (pe.Range, error) {
 	}
 	return pe.Range{}, ErrNoVolumeRange
 }
+
+// RecallPreset selects a stored netusb preset — a SiriusXM channel, a net radio
+// station, whatever was saved in that slot.
+//
+// Presets are the only station selection this daemon offers, deliberately. The
+// alternative is walking the SiriusXM menu with getListInfo and setListControl,
+// which is stateful, shared by every client of the receiver, and reorders
+// underneath you as the service rearranges its categories. A recall is one
+// stateless call that also switches the input, so it lands the same way from
+// any starting point.
+func (c *Client) RecallPreset(ctx context.Context, num int) error {
+	return c.get(ctx, "/netusb/recallPreset", url.Values{
+		"zone": {"main"},
+		"num":  {strconv.Itoa(num)},
+	}, nil)
+}
+
+// GetPlayInfo reads what the current network source is playing.
+func (c *Client) GetPlayInfo(ctx context.Context) (PlayInfo, error) {
+	var p PlayInfo
+	err := c.get(ctx, "/netusb/getPlayInfo", nil, &p)
+	return p, err
+}
+
+// GetPresetInfo lists the stored presets, numbered from one.
+//
+// Empty slots are dropped rather than reported: the R-N303 answers with all
+// forty regardless, the unused ones carrying input "unknown" and no text, and
+// a client rendering a station menu wants the seven that exist rather than
+// thirty-three blanks it has to filter itself.
+//
+// The slot number is the array position, which is why the empties are filtered
+// here rather than by the caller — the position is only knowable before the
+// list is compacted.
+func (c *Client) GetPresetInfo(ctx context.Context) ([]pe.Preset, error) {
+	var reply struct {
+		PresetInfo []struct {
+			Input string `json:"input"`
+			Text  string `json:"text"`
+		} `json:"preset_info"`
+	}
+	if err := c.get(ctx, "/netusb/getPresetInfo", nil, &reply); err != nil {
+		return nil, err
+	}
+
+	presets := make([]pe.Preset, 0, len(reply.PresetInfo))
+	for i, p := range reply.PresetInfo {
+		if p.Input == "" || p.Input == "unknown" {
+			continue
+		}
+		presets = append(presets, pe.Preset{Num: i + 1, Input: p.Input, Text: p.Text})
+	}
+	return presets, nil
+}

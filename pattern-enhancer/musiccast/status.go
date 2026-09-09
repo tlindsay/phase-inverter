@@ -14,3 +14,17 @@ type Status struct {
 	Input        string `json:"input"`
 	MaxVolume    int    `json:"max_volume"`
 }
+
+// PlayInfo is the receiver's reply to netusb/getPlayInfo: what the current
+// network source is playing.
+//
+// Input is not decoration. The receiver answers this call with the last netusb
+// session no matter what the zone is actually listening to, so with the
+// turntable playing it still reports the SiriusXM channel from an hour ago.
+// Callers must check that this describes the input that is actually selected.
+type PlayInfo struct {
+	Input  string `json:"input"`
+	Artist string `json:"artist"`
+	Album  string `json:"album"`
+	Track  string `json:"track"`
+}

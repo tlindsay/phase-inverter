@@ -20,6 +20,11 @@ type stubBackend struct {
 	state pe.State
 }
 
+var stubPresets = []pe.Preset{
+	{Num: 1, Input: "siriusxm", Text: "36 : Alt Nation / New Alternative Rock"},
+	{Num: 2, Input: "siriusxm", Text: "35 : SiriusXMU / Indie & Beyond"},
+}
+
 func newStub() *stubBackend {
 	return &stubBackend{state: pe.State{
 		Seq: 3, Power: pe.PowerOn, Volume: 45, Input: "phono",
@@ -53,6 +58,17 @@ func (s *stubBackend) SetPower(context.Context, bool) error { return nil }
 func (s *stubBackend) TogglePower(context.Context) error    { return nil }
 func (s *stubBackend) SetMute(context.Context, bool) error  { return nil }
 func (s *stubBackend) ToggleMute(context.Context) error     { return nil }
+
+func (s *stubBackend) RecallPreset(_ context.Context, num int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Input = "siriusxm"
+	s.state.Playing = pe.Playing{Album: stubPresets[num-1].Text}
+	s.state.Seq++
+	return nil
+}
+
+func (s *stubBackend) Presets(context.Context) ([]pe.Preset, error) { return stubPresets, nil }
 
 func liveServer(t *testing.T) (*server.Server, *pe.Client) {
 	t.Helper()
@@ -155,5 +171,39 @@ func TestEventsChannelClosesOnCancel(t *testing.T) {
 		case <-deadline:
 			t.Fatal("event channel stayed open after cancellation")
 		}
+	}
+}
+
+func TestRecallPresetReturnsConfirmedState(t *testing.T) {
+	_, c := liveServer(t)
+
+	st, err := c.RecallPreset(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("RecallPreset returned error: %v", err)
+	}
+
+	if st.Input != "siriusxm" {
+		t.Errorf("Input = %q, want %q", st.Input, "siriusxm")
+	}
+	// Playing rides along on State, so a UI knows what it landed on without a
+	// second request.
+	if st.Playing.Album != "35 : SiriusXMU / Indie & Beyond" {
+		t.Errorf("Playing.Album = %q, want the recalled station", st.Playing.Album)
+	}
+}
+
+func TestPresetsRoundTripOverTheRealContract(t *testing.T) {
+	_, c := liveServer(t)
+
+	got, err := c.Presets(context.Background())
+	if err != nil {
+		t.Fatalf("Presets returned error: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("got %d presets, want 2", len(got))
+	}
+	if got[0].Num != 1 || got[0].Text != "36 : Alt Nation / New Alternative Rock" {
+		t.Errorf("preset = %+v, want slot 1 with the receiver's label", got[0])
 	}
 }

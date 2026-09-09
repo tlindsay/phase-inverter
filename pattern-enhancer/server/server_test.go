@@ -19,6 +19,8 @@ import (
 type fakeBackend struct {
 	mu         sync.Mutex
 	state      pe.State
+	recalled   int
+	presets    []pe.Preset
 	volSteps   int
 	input      string
 	powerOn    *bool
@@ -82,6 +84,28 @@ func (f *fakeBackend) ToggleMute(_ context.Context) error {
 	defer f.mu.Unlock()
 	f.muteTogd = true
 	return nil
+}
+
+// RecallPreset moves the input the way a real recall does.
+func (f *fakeBackend) RecallPreset(_ context.Context, num int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWithIt != nil {
+		return f.failWithIt
+	}
+	f.recalled = num
+	f.state.Input = "siriusxm"
+	f.state.Seq++
+	return nil
+}
+
+func (f *fakeBackend) Presets(context.Context) ([]pe.Preset, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWithIt != nil {
+		return nil, f.failWithIt
+	}
+	return f.presets, nil
 }
 
 func testServer(t *testing.T, b Backend) (*Server, *httptest.Server) {
@@ -342,5 +366,102 @@ func readSSEEvent(t *testing.T, resp *http.Response) sseEvent {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out reading an SSE event")
 		return sseEvent{}
+	}
+}
+
+func TestPostPresetRecallsSlotAndReturnsState(t *testing.T) {
+	b := newFakeBackend()
+	_, ts := testServer(t, b)
+
+	resp, err := http.Post(ts.URL+"/v1/devices/office/preset",
+		"application/json", strings.NewReader(`{"num":2}`))
+	if err != nil {
+		t.Fatalf("POST preset: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	b.mu.Lock()
+	got := b.recalled
+	b.mu.Unlock()
+	if got != 2 {
+		t.Errorf("backend recalled preset %d, want 2", got)
+	}
+
+	// A recall switches the input, and the response carries that rather than
+	// making the client wait for the stream to say so.
+	st := decodeState(t, readBody(t, resp))
+	if st.Input != "siriusxm" {
+		t.Errorf("returned Input = %q, want %q", st.Input, "siriusxm")
+	}
+}
+
+func TestPostPresetRejectsSlotsBelowOne(t *testing.T) {
+	b := newFakeBackend()
+	_, ts := testServer(t, b)
+
+	resp, err := http.Post(ts.URL+"/v1/devices/office/preset",
+		"application/json", strings.NewReader(`{"num":0}`))
+	if err != nil {
+		t.Fatalf("POST preset: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d for preset 0, want 400", resp.StatusCode)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.recalled != 0 {
+		t.Error("a rejected request still reached the receiver")
+	}
+}
+
+func TestGetPresetsListsStoredStations(t *testing.T) {
+	b := newFakeBackend()
+	b.presets = []pe.Preset{
+		{Num: 1, Input: "siriusxm", Text: "36 : Alt Nation / New Alternative Rock"},
+		{Num: 2, Input: "siriusxm", Text: "35 : SiriusXMU / Indie & Beyond"},
+	}
+	_, ts := testServer(t, b)
+
+	resp, err := http.Get(ts.URL + "/v1/devices/office/presets")
+	if err != nil {
+		t.Fatalf("GET presets: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var got []pe.Preset
+	if err := json.Unmarshal(readBody(t, resp), &got); err != nil {
+		t.Fatalf("decoding presets: %v", err)
+	}
+	if len(got) != 2 || got[1].Num != 2 {
+		t.Fatalf("presets = %+v, want the backend's two stations", got)
+	}
+	if got[0].Text != "36 : Alt Nation / New Alternative Rock" {
+		t.Errorf("Text = %q, want the receiver's own label", got[0].Text)
+	}
+}
+
+func TestGetPresetsAnswersWithAnArrayWhenNoneAreStored(t *testing.T) {
+	_, ts := testServer(t, newFakeBackend())
+
+	resp, err := http.Get(ts.URL + "/v1/devices/office/presets")
+	if err != nil {
+		t.Fatalf("GET presets: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// null would make every client special-case a receiver with nothing saved.
+	if body := strings.TrimSpace(string(readBody(t, resp))); body != "[]" {
+		t.Errorf("body = %q for an empty list, want %q", body, "[]")
 	}
 }

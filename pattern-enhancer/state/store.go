@@ -94,6 +94,22 @@ func (m *Store) SetRange(r pe.Range) pe.State {
 	return m.commit(next)
 }
 
+// ApplyPlaying records what the current source is playing.
+//
+// Separate from ApplySnapshot because it comes from a separate call: getStatus
+// describes the zone, getPlayInfo describes the network source, and they are
+// fetched independently. commit's equality check does the rest — a stream that
+// pushes the same track title twice costs one comparison, not an SSE broadcast
+// to every subscriber.
+func (m *Store) ApplyPlaying(p pe.Playing) pe.State {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	next := m.state
+	next.Playing = p
+	return m.commit(next)
+}
+
 // ApplyEvent folds in a pushed UDP event. Only non-nil fields are touched: the
 // device reports just what changed, so anything else in the event's absence
 // must be left exactly as it was.
