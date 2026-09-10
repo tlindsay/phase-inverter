@@ -219,7 +219,7 @@ func listen(ctx context.Context, localAddr, hostname, stateDir, authKeyFile stri
 		return nil, nil, fmt.Errorf("joining tailnet as %q: %w", hostname, err)
 	}
 	if status != nil && len(status.TailscaleIPs) > 0 {
-		log.Infof("joined tailnet as %q (%s)", hostname, status.TailscaleIPs[0])
+		log.Infof("joined tailnet as %q (%s)", status.Self.DNSName, status.TailscaleIPs[0])
 	}
 
 	// Port 80 on the daemon's own tailnet address, not the host's. Nothing
